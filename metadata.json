@@ -1,0 +1,7 @@
+{
+  "name": "TTC SmartProcure (ระบบจัดซื้อจัดจ้างอัจฉริยะ เทคนิคตรัง)",
+  "description": "ระบบบริหารจัดการโครงการ จัดซื้อจัดจ้าง และการยืมเงินทดลองราชการ วิทยาลัยเทคนิคตรัง (TTC Smart Procurement & Loan Management System)",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
+

@@ -1,0 +1,120 @@
+@import "tailwindcss";
+
+@font-face {
+  font-family: 'TH Sarabun New';
+  src: local('TH Sarabun New'), local('THSarabunNew'), local('Sarabun');
+  font-weight: normal;
+  font-style: normal;
+}
+
+@font-face {
+  font-family: 'TH Sarabun New';
+  src: local('TH Sarabun New Bold'), local('THSarabunNew-Bold'), local('Sarabun Bold'), local('Sarabun');
+  font-weight: bold;
+  font-style: normal;
+}
+
+@font-face {
+  font-family: 'TH Sarabun New';
+  src: local('TH Sarabun New Italic'), local('THSarabunNew-Italic'), local('Sarabun Italic'), local('Sarabun');
+  font-weight: normal;
+  font-style: italic;
+}
+
+@font-face {
+  font-family: 'TH Sarabun New';
+  src: local('TH Sarabun New BoldItalic'), local('THSarabunNew-BoldItalic'), local('Sarabun BoldItalic'), local('Sarabun');
+  font-weight: bold;
+  font-style: italic;
+}
+
+@theme {
+  --font-sans: "TH Sarabun New", "Sarabun", "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-sarabun: "TH Sarabun New", "Sarabun", sans-serif;
+  --animate-spin-slow: spin 3s linear infinite;
+}
+
+body {
+  @apply bg-slate-50;
+}
+
+@media print {
+  @page {
+    margin: 10mm;
+    size: auto;
+  }
+  
+  body {
+    background-color: white !important;
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+  }
+
+  /* Aggressively hide sidebar and header */
+  aside, 
+  header, 
+  nav, 
+  footer, 
+  button:not(.print-visible),
+  .print-hidden, 
+  .print\:hidden,
+  [role="navigation"],
+  [role="banner"] {
+    display: none !important;
+    visibility: hidden !important;
+    height: 0 !important;
+    width: 0 !important;
+    overflow: hidden !important;
+    position: absolute !important;
+    top: -9999px !important;
+  }
+
+  main {
+    padding: 0 !important;
+    margin: 0 !important;
+    width: 100% !important;
+    display: block !important;
+    position: static !important;
+  }
+
+  .print-container {
+    display: block !important;
+    width: 100% !important;
+    height: auto !important;
+    position: static !important;
+    overflow: visible !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    z-index: auto !important;
+  }
+
+  /* Ensure charts and other elements are visible */
+  canvas, svg {
+    max-width: 100% !important;
+    height: auto !important;
+  }
+
+  /* Force visibility for elements that might be hidden by animations or transitions */
+  .motion-div, [data-framer-generated], #executive-summary, #executive-preview, #a01-document, #b01-document, #b02-document, #item-analysis-section, #item-details-modal {
+    opacity: 1 !important;
+    visibility: visible !important;
+    display: block !important;
+    transform: none !important;
+    transition: none !important;
+  }
+
+  #executive-summary, #executive-preview, #item-analysis-section, #item-details-modal {
+    position: static !important;
+    width: 100% !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    box-shadow: none !important;
+    border: none !important;
+    background: white !important;
+  }
+
+  /* Hide everything else when printing a specific modal */
+  body:has(#item-details-modal) main > *:not(:has(#item-details-modal)) {
+    display: none !important;
+  }
+}
