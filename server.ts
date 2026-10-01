@@ -428,9 +428,15 @@ async function startServer() {
 
       let targetFiscalYear = fiscal_year ? String(fiscal_year).trim() : null;
       if (!targetFiscalYear) {
-        const curFy = db.prepare("SELECT year FROM fiscal_years WHERE is_current = 1 LIMIT 1").get() as any;
-        targetFiscalYear = curFy ? curFy.year : '2568';
+        try {
+          const curFy = db.prepare("SELECT year FROM fiscal_years WHERE is_current = 1 LIMIT 1").get() as any;
+          targetFiscalYear = curFy ? curFy.year : '2568';
+        } catch (e) {
+          targetFiscalYear = '2568';
+        }
       }
+
+      const finalTitle = (title && String(title).trim()) || (is_loan ? 'โครงการยืมเงินทดลองราชการ' : (isOtherExp ? 'รายการค่าใช้จ่ายอื่น' : 'โครงการจัดซื้อจัดจ้าง'));
 
       const info = db.prepare(`
         INSERT INTO projects (
@@ -445,7 +451,7 @@ async function startServer() {
         )
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
       `).run(
-        project_code || null, title, department || (isOtherExp ? 'งานการเงิน' : null), parsedBudget, budget_source || null, expense_category || null,
+        project_code || null, finalTitle, department || (isOtherExp ? 'งานการเงิน' : null), parsedBudget, budget_source || null, expense_category || null,
         creator_name || null, creator_position || null, creator_id || null,
         initialNature, necessity_reason || expense_notes || null, material_usage_date || null, parsedAllocated, procured_amount || 0,
         dept_head_name || null, dept_head_position || null, deputy_name || null, deputy_position || null,
@@ -459,12 +465,23 @@ async function startServer() {
       const projectId = info.lastInsertRowid;
 
       if (items && Array.isArray(items)) {
-        const insertItem = db.prepare(`
-          INSERT INTO project_items (project_id, description, unit, quantity, unit_price, total_price, shop_name)
-          VALUES (?, ?, ?, ?, ?, ?, ?)
-        `);
-        for (const item of items) {
-          insertItem.run(projectId, item.description, item.unit, item.quantity, item.unit_price, item.total_price, item.shop_name || null);
+        const validItems = items.filter((item: any) => item && (item.description || item.unit_price > 0 || item.quantity > 0));
+        if (validItems.length > 0) {
+          const insertItem = db.prepare(`
+            INSERT INTO project_items (project_id, description, unit, quantity, unit_price, total_price, shop_name)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+          `);
+          for (const item of validItems) {
+            insertItem.run(
+              projectId, 
+              item.description || '-', 
+              item.unit || '', 
+              Number(item.quantity) || 1, 
+              Number(item.unit_price) || 0, 
+              Number(item.total_price) || 0, 
+              item.shop_name || null
+            );
+          }
         }
       }
 
@@ -475,9 +492,9 @@ async function startServer() {
       `).run(projectId, initialProcess, logAction, creator_name || 'ผู้ดำเนินการ');
 
       res.json({ id: projectId });
-    } catch (err) {
-      console.error(err);
-      res.status(500).json({ error: "Failed to create project" });
+    } catch (err: any) {
+      console.error("Error creating project:", err);
+      res.status(500).json({ error: "Failed to create project", details: err?.message || String(err) });
     }
   });
 

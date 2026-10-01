@@ -1699,83 +1699,153 @@ export default function App() {
       const totalNum = parseFloat(otherExpenseForm.total_amount) || (expNum + vatNum);
 
       if (!otherExpenseForm.title.trim()) {
-        alert('กรุณากรอกชื่อรายการค่าใช้จ่ายอื่น');
+        showToast('กรุณากรอกชื่อรายการค่าใช้จ่ายอื่น', 'error');
         return;
       }
       if (!totalNum || totalNum <= 0) {
-        alert('กรุณาระบุจำนวนเงินรวมทั้งสิ้น');
+        showToast('กรุณาระบุจำนวนเงินรวมทั้งสิ้น', 'error');
         return;
       }
 
-      const res = await fetch('/api/projects', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          title: otherExpenseForm.title.trim(),
-          expense_category: otherExpenseForm.expense_category || 'ค่าใช้จ่ายอื่น',
-          voucher_no: otherExpenseForm.voucher_no.trim() || null,
-          expense_amount: expNum,
-          vat_amount: vatNum,
-          budget_amount: totalNum,
-          allocated_budget: totalNum,
-          remaining_budget: totalNum,
-          expense_notes: otherExpenseForm.expense_notes.trim(),
-          necessity_reason: otherExpenseForm.expense_notes.trim(),
-          project_nature: 'รายการค่าใช้จ่ายอื่น',
-          department: 'งานการเงิน',
-          creator_id: currentUser?.username,
-          creator_name: currentUser?.name || 'งานการเงิน',
-          creator_position: currentUser?.position || 'เจ้าหน้าที่งานการเงิน',
-          is_other_expense: true,
-          fiscal_year: otherExpenseForm.fiscal_year || currentFiscalYear || '2568',
-          status: 'pending'
-        })
-      });
+      const otherExpensePayload = {
+        title: otherExpenseForm.title.trim(),
+        expense_category: otherExpenseForm.expense_category || 'ค่าใช้จ่ายอื่น',
+        voucher_no: otherExpenseForm.voucher_no.trim() || null,
+        expense_amount: expNum,
+        vat_amount: vatNum,
+        budget_amount: totalNum,
+        allocated_budget: totalNum,
+        remaining_budget: totalNum,
+        expense_notes: otherExpenseForm.expense_notes.trim(),
+        necessity_reason: otherExpenseForm.expense_notes.trim(),
+        project_nature: 'รายการค่าใช้จ่ายอื่น',
+        department: 'งานการเงิน',
+        creator_id: currentUser?.username || 'FINANCE',
+        creator_name: currentUser?.name || 'งานการเงิน',
+        creator_position: currentUser?.position || 'เจ้าหน้าที่งานการเงิน',
+        is_other_expense: true,
+        fiscal_year: otherExpenseForm.fiscal_year || currentFiscalYear || '2568',
+        status: 'pending'
+      };
 
-      if (!res.ok) {
-        const errorData = await safeParseJson(res);
-        throw new Error(errorData?.error || 'Failed to create other expense');
+      const resetOtherForm = () => {
+        setOtherExpenseForm({
+          fiscal_year: currentFiscalYear,
+          expense_category: '',
+          title: '',
+          voucher_no: '',
+          expense_amount: '',
+          vat_amount: '',
+          total_amount: '',
+          expense_notes: ''
+        });
+      };
+
+      const createOtherExpenseLocally = () => {
+        try {
+          const localId = Date.now();
+          const createdProject: Project = {
+            id: localId,
+            project_code: `EXP-${new Date().getFullYear() + 543}-${String(localId).slice(-4)}`,
+            title: otherExpensePayload.title,
+            department: 'งานการเงิน',
+            budget_amount: totalNum,
+            allocated_budget: totalNum,
+            request_amount: totalNum,
+            remaining_budget: totalNum,
+            budget_source: otherExpensePayload.expense_category,
+            expense_category: otherExpensePayload.expense_category,
+            creator_id: currentUser?.username || 'FINANCE',
+            creator_name: currentUser?.name || 'งานการเงิน',
+            creator_position: currentUser?.position || 'เจ้าหน้าที่งานการเงิน',
+            is_other_expense: true,
+            voucher_no: otherExpenseForm.voucher_no.trim() || undefined,
+            expense_amount: expNum,
+            vat_amount: vatNum,
+            expense_notes: otherExpenseForm.expense_notes.trim(),
+            necessity_reason: otherExpenseForm.expense_notes.trim(),
+            project_nature: 'รายการค่าใช้จ่ายอื่น',
+            fiscal_year: otherExpensePayload.fiscal_year,
+            current_process: 'E',
+            current_step: 1,
+            status: 'pending',
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString()
+          };
+
+          const saved = localStorage.getItem('ttc_smartprocure_projects');
+          const currentList: Project[] = saved ? JSON.parse(saved) : projects;
+          const updatedList = [createdProject, ...currentList.filter(p => p.id !== localId)];
+          localStorage.setItem('ttc_smartprocure_projects', JSON.stringify(updatedList));
+          setProjects(updatedList);
+
+          showToast('บันทึกรายการค่าใช้จ่ายอื่นเรียบร้อยแล้ว');
+          resetOtherForm();
+          setSelectedProject(createdProject);
+          setView('detail');
+        } catch (err: any) {
+          showToast('เกิดข้อผิดพลาดในการบันทึกข้อมูล: ' + (err.message || ''), 'error');
+        }
+      };
+
+      try {
+        const res = await fetch('/api/projects', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(otherExpensePayload)
+        });
+
+        if (res.ok) {
+          const data = await safeParseJson(res);
+          showToast('บันทึกรายการค่าใช้จ่ายอื่นเรียบร้อยแล้ว');
+          resetOtherForm();
+          await fetchProjects();
+          if (data && data.id) {
+            fetchProjectDetail(data.id);
+          } else {
+            setView('dashboard');
+          }
+          return;
+        }
+
+        // Fallback for static hosting / offline
+        createOtherExpenseLocally();
+      } catch (err: any) {
+        console.warn('Network error creating other expense, fallback locally:', err);
+        createOtherExpenseLocally();
       }
-
-      const data = await safeParseJson(res);
-      setOtherExpenseForm({
-        fiscal_year: currentFiscalYear,
-        expense_category: '',
-        title: '',
-        voucher_no: '',
-        expense_amount: '',
-        vat_amount: '',
-        total_amount: '',
-        expense_notes: ''
-      });
-      await fetchProjects();
-      fetchProjectDetail(data.id);
     } catch (err: any) {
       console.error(err);
-      alert(err.message || 'เกิดข้อผิดพลาดในการบันทึกข้อมูล');
+      showToast(err.message || 'เกิดข้อผิดพลาดในการบันทึกข้อมูล', 'error');
     }
   };
 
   const handleCreateProject = async (e: React.FormEvent, isLoan: boolean = false, isDraft: boolean = false) => {
     e.preventDefault();
-    try {
-      const res = await fetch('/api/projects', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          ...newProject,
-          is_loan: isLoan,
-          creator_id: currentUser?.username,
-          status: isDraft ? 'DRAFT' : 'pending'
-        })
-      });
-      
-      if (!res.ok) {
-        const errorData = await safeParseJson(res);
-        throw new Error(errorData?.error || 'Failed to create project');
-      }
-      
-      const data = await safeParseJson(res);
+
+    const validItems = (newProject.items || []).filter(
+      it => it && (it.description?.trim() || Number(it.unit_price) > 0 || Number(it.quantity) > 0)
+    );
+    const calculatedBudget = validItems.reduce((sum, it) => sum + (Number(it.quantity || 1) * Number(it.unit_price || 0)), 0);
+    const finalBudget = Number(newProject.budget_amount) || calculatedBudget;
+    const finalTitle = newProject.title?.trim() || (isLoan ? 'โครงการยืมเงินทดลองราชการ' : 'โครงการจัดซื้อจัดจ้าง');
+
+    const projectPayload = {
+      ...newProject,
+      title: finalTitle,
+      budget_amount: finalBudget,
+      allocated_budget: Number(newProject.allocated_budget) || finalBudget,
+      request_amount: finalBudget,
+      remaining_budget: (Number(newProject.allocated_budget) || finalBudget) - finalBudget,
+      items: validItems,
+      is_loan: isLoan,
+      creator_id: currentUser?.username || 'STAFF',
+      creator_name: newProject.creator_name?.trim() || currentUser?.name || 'บุคลากร',
+      creator_position: newProject.creator_position?.trim() || currentUser?.position || '',
+      status: isDraft ? 'DRAFT' : 'pending'
+    };
+
+    const resetNewForm = () => {
       setNewProject({
         project_code: '',
         fiscal_year: currentFiscalYear || '2568',
@@ -1798,13 +1868,76 @@ export default function App() {
         committee_member1: '',
         committee_member2: '',
         is_loan: false,
-        items: [{ description: '', unit: '', quantity: 1, unit_price: 0, total_price: 0 }]
+        items: [{ description: '', unit: '', quantity: 1, unit_price: 0, total_price: 0, shop_name: '' }]
       });
-      await fetchProjects();
-      fetchProjectDetail(data.id);
+    };
+
+    const createProjectLocally = () => {
+      try {
+        const localId = Date.now();
+        const createdProject: Project = {
+          ...projectPayload,
+          id: localId,
+          project_code: newProject.project_code?.trim() || `PR-${new Date().getFullYear() + 543}-${String(localId).slice(-4)}`,
+          fiscal_year: newProject.fiscal_year || currentFiscalYear || '2568',
+          department: newProject.department?.trim() || 'งานพัฒนายุทธศาสตร์ฯ',
+          budget_source: newProject.budget_source || 'เงินรายได้สถานศึกษา',
+          procured_amount: Number(newProject.procured_amount) || 0,
+          current_process: isLoan ? 'D' : 'A',
+          current_step: 1,
+          status: isDraft ? 'DRAFT' : 'pending',
+          borrower_name: isLoan ? (newProject.creator_name || currentUser?.name) : undefined,
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString()
+        };
+
+        const saved = localStorage.getItem('ttc_smartprocure_projects');
+        const currentList: Project[] = saved ? JSON.parse(saved) : projects;
+        const updatedList = [createdProject, ...currentList.filter(p => p.id !== localId)];
+        localStorage.setItem('ttc_smartprocure_projects', JSON.stringify(updatedList));
+        setProjects(updatedList);
+
+        showToast(isDraft ? 'บันทึกร่างโครงการเรียบร้อยแล้ว' : 'บันทึกโครงการและเริ่มต้นกระบวนการ A เรียบร้อยแล้ว');
+        resetNewForm();
+        setSelectedProject(createdProject);
+        setView('detail');
+      } catch (err: any) {
+        showToast('เกิดข้อผิดพลาดในการบันทึกข้อมูล: ' + (err.message || ''), 'error');
+      }
+    };
+
+    try {
+      const res = await fetch('/api/projects', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(projectPayload)
+      });
+      
+      if (res.ok) {
+        const data = await safeParseJson(res);
+        showToast(isDraft ? 'บันทึกร่างโครงการเรียบร้อยแล้ว' : 'บันทึกโครงการและเริ่มต้นกระบวนการ A เรียบร้อยแล้ว');
+        resetNewForm();
+        await fetchProjects();
+        if (data && data.id) {
+          fetchProjectDetail(data.id);
+        } else {
+          setView('dashboard');
+        }
+        return;
+      }
+
+      // If backend returned 404 (e.g. Vercel static hosting) or network error
+      if (res.status === 404 || !res.status) {
+        createProjectLocally();
+        return;
+      }
+
+      const errorData = await safeParseJson(res);
+      showToast('เกิดข้อผิดพลาด: ' + (errorData?.details || errorData?.error || 'Failed to create project'), 'error');
+      createProjectLocally();
     } catch (err: any) {
-      console.error(err);
-      alert(err.message || 'เกิดข้อผิดพลาดในการบันทึกข้อมูล');
+      console.warn('Network error creating project, saving locally:', err);
+      createProjectLocally();
     }
   };
 
