@@ -1432,6 +1432,32 @@ async function startServer() {
     }
   });
 
+  app.post("/api/projects/batch-delete", (req, res) => {
+    try {
+      const { ids } = req.body;
+      if (!Array.isArray(ids) || ids.length === 0) {
+        return res.status(400).json({ error: "กรุณาระบุรายการโครงการที่ต้องการลบ" });
+      }
+      console.log(`[BATCH-DELETE] Request received for ${ids.length} projects:`, ids);
+      const transaction = db.transaction((projectIds: (string | number)[]) => {
+        let deletedCount = 0;
+        for (const id of projectIds) {
+          db.prepare("DELETE FROM project_items WHERE project_id = ?").run(id);
+          db.prepare("DELETE FROM project_logs WHERE project_id = ?").run(id);
+          const info = db.prepare("DELETE FROM projects WHERE id = ?").run(id);
+          deletedCount += info.changes;
+        }
+        return deletedCount;
+      });
+      const count = transaction(ids);
+      console.log(`[BATCH-DELETE] Deleted ${count} projects successfully`);
+      res.json({ success: true, count });
+    } catch (err) {
+      console.error("[BATCH-DELETE] Error batch deleting projects:", err);
+      res.status(500).json({ error: "Failed to batch delete projects", details: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
   app.delete("/api/projects/:id", (req, res) => {
     const projectId = req.params.id;
     console.log(`[DELETE] Request received for project ID: ${projectId}`);

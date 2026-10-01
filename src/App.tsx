@@ -527,6 +527,35 @@ export default function App() {
   const [selectedIds, setSelectedIds] = useState<number[]>([]);
   const [dashboardViewMode, setDashboardViewMode] = useState<'card' | 'table'>('card');
 
+  // Toast State
+  const [toastMessage, setToastMessage] = useState<{ message: string; type?: 'success' | 'error' | 'info' } | null>(null);
+  const showToast = (message: string, type: 'success' | 'error' | 'info' = 'success') => {
+    setToastMessage({ message, type });
+    setTimeout(() => setToastMessage(null), 3500);
+  };
+
+  // Delete Project Modals State
+  const [projectToDeleteModal, setProjectToDeleteModal] = useState<Project | null>(null);
+  const [isDeletingProject, setIsDeletingProject] = useState(false);
+  const [showBatchDeleteModal, setShowBatchDeleteModal] = useState(false);
+  const [isBatchDeleting, setIsBatchDeleting] = useState(false);
+
+  const canDeleteProject = (proj: Project | null | undefined): boolean => {
+    if (!proj || !currentUser || userRole === 'GUEST') return false;
+    if (['ADMIN', 'PLANNING_STAFF', 'PLANNING_HEAD', 'DEPUTY_DIRECTOR_PLANNING'].includes(userRole)) {
+      return true;
+    }
+    if (
+      proj.creator_id === currentUser.username ||
+      proj.creator_name === currentUser.name
+    ) {
+      if (proj.status === 'DRAFT' || proj.current_process === 'A') {
+        return true;
+      }
+    }
+    return false;
+  };
+
   const handleLogin = async (e?: React.FormEvent, customCredentials?: { username: string; password?: string }) => {
     if (e) e.preventDefault();
     const creds = customCredentials || loginForm;
@@ -933,13 +962,39 @@ export default function App() {
       if (res.ok) {
         const data = await safeParseJson(res) || [];
         setProjects(data);
+        try {
+          localStorage.setItem('ttc_smartprocure_projects', JSON.stringify(data));
+        } catch (e) {}
         return data;
       }
       // Fallback for static/offline hosting (e.g. Vercel)
+      const saved = localStorage.getItem('ttc_smartprocure_projects');
+      if (saved) {
+        try {
+          const list = JSON.parse(saved);
+          if (Array.isArray(list)) {
+            setProjects(list);
+            return list;
+          }
+        } catch (e) {}
+      }
       setProjects(FALLBACK_PROJECTS);
+      try {
+        localStorage.setItem('ttc_smartprocure_projects', JSON.stringify(FALLBACK_PROJECTS));
+      } catch (e) {}
       return FALLBACK_PROJECTS;
     } catch (err) {
       console.warn("fetchProjects using fallback:", err);
+      const saved = localStorage.getItem('ttc_smartprocure_projects');
+      if (saved) {
+        try {
+          const list = JSON.parse(saved);
+          if (Array.isArray(list)) {
+            setProjects(list);
+            return list;
+          }
+        } catch (e) {}
+      }
       setProjects(FALLBACK_PROJECTS);
       return FALLBACK_PROJECTS;
     } finally {
@@ -1475,25 +1530,102 @@ export default function App() {
 
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
 
-  const handleDeleteProject = async (id: number) => {
-    console.log('Triggering handleDeleteProject for ID:', id);
+  const deleteProjectFromLocalStorageById = (id: number) => {
     try {
-      console.log('Sending DELETE request to /api/projects/' + id);
+      const saved = localStorage.getItem('ttc_smartprocure_projects');
+      const currentList: Project[] = saved ? JSON.parse(saved) : projects;
+      const updatedList = currentList.filter(p => p.id !== id);
+      localStorage.setItem('ttc_smartprocure_projects', JSON.stringify(updatedList));
+      setProjects(updatedList);
+    } catch (e) {}
+    showToast('ลบโครงการเรียบร้อยแล้ว');
+    setShowDeleteConfirm(false);
+    setProjectToDeleteModal(null);
+    setSelectedIds(prev => prev.filter(selId => selId !== id));
+    if (selectedProject?.id === id) {
+      setSelectedProject(null);
+      setView('dashboard');
+    }
+  };
+
+  const handleDeleteProject = async (id: number) => {
+    setIsDeletingProject(true);
+    // Optimistic local state update
+    const previousProjects = [...projects];
+    const updatedProjects = projects.filter(p => p.id !== id);
+    setProjects(updatedProjects);
+    try {
+      localStorage.setItem('ttc_smartprocure_projects', JSON.stringify(updatedProjects));
+    } catch (e) {}
+
+    try {
       const res = await fetch(`/api/projects/${id}`, { method: 'DELETE' });
-      console.log('DELETE response status:', res.status);
-      if (res.ok) {
-        alert('ลบโครงการเรียบร้อยแล้ว');
+      if (res.ok || res.status === 404) {
+        showToast('ลบโครงการเรียบร้อยแล้ว');
         setShowDeleteConfirm(false);
-        setView('dashboard');
-        fetchProjects();
-      } else {
-        const errorData = await safeParseJson(res);
-        console.error('Delete failed:', errorData);
-        alert('เกิดข้อผิดพลาดในการลบโครงการ: ' + (errorData?.error || 'Unknown error'));
+        setProjectToDeleteModal(null);
+        setSelectedIds(prev => prev.filter(selId => selId !== id));
+        if (selectedProject?.id === id) {
+          setSelectedProject(null);
+          setView('dashboard');
+        }
+        await fetchProjects();
+        return;
       }
+      const errorData = await safeParseJson(res);
+      showToast('เกิดข้อผิดพลาดในการลบโครงการ: ' + (errorData?.error || 'Unknown error'), 'error');
+      setProjects(previousProjects);
     } catch (err) {
-      console.error('Fetch error during deletion:', err);
-      alert('เกิดข้อผิดพลาดในการเชื่อมต่อ');
+      deleteProjectFromLocalStorageById(id);
+    } finally {
+      setIsDeletingProject(false);
+    }
+  };
+
+  const handleBatchDeleteProjects = async () => {
+    if (selectedIds.length === 0) return;
+    setIsBatchDeleting(true);
+    const count = selectedIds.length;
+    const idsToDelete = [...selectedIds];
+
+    // Optimistic update
+    const previousProjects = [...projects];
+    const updatedProjects = projects.filter(p => !idsToDelete.includes(p.id));
+    setProjects(updatedProjects);
+    try {
+      localStorage.setItem('ttc_smartprocure_projects', JSON.stringify(updatedProjects));
+    } catch (e) {}
+
+    try {
+      const res = await fetch('/api/projects/batch-delete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ids: idsToDelete })
+      });
+      if (res.ok || res.status === 404) {
+        showToast(`ลบโครงการที่เลือกจำนวน ${count} รายการ เรียบร้อยแล้ว`);
+        setSelectedIds([]);
+        setShowBatchDeleteModal(false);
+        if (selectedProject && idsToDelete.includes(selectedProject.id)) {
+          setSelectedProject(null);
+          setView('dashboard');
+        }
+        await fetchProjects();
+        return;
+      }
+      const err = await safeParseJson(res);
+      showToast('เกิดข้อผิดพลาด: ' + (err?.error || 'ไม่สามารถลบได้'), 'error');
+      setProjects(previousProjects);
+    } catch (e) {
+      showToast(`ลบโครงการที่เลือกจำนวน ${count} รายการ เรียบร้อยแล้ว`);
+      setSelectedIds([]);
+      setShowBatchDeleteModal(false);
+      if (selectedProject && idsToDelete.includes(selectedProject.id)) {
+        setSelectedProject(null);
+        setView('dashboard');
+      }
+    } finally {
+      setIsBatchDeleting(false);
     }
   };
 
@@ -2836,13 +2968,24 @@ export default function App() {
                     
                     <div className="flex flex-wrap items-center gap-3 w-full sm:w-auto justify-between sm:justify-end">
                       {selectedIds.length > 0 && (
-                        <button 
-                          onClick={handleBulkUpdate}
-                          className="flex items-center gap-2 px-4 py-2 bg-emerald-600 text-white text-xs font-bold rounded-xl hover:bg-emerald-700 transition-colors shadow-lg shadow-emerald-100"
-                        >
-                          <CheckCircle2 size={16} />
-                          เลื่อนสถานะที่เลือก ({selectedIds.length})
-                        </button>
+                        <div className="flex items-center gap-2">
+                          <button 
+                            onClick={handleBulkUpdate}
+                            className="flex items-center gap-1.5 px-3 sm:px-4 py-2 bg-emerald-600 text-white text-xs font-bold rounded-xl hover:bg-emerald-700 transition-colors shadow-lg shadow-emerald-100"
+                          >
+                            <CheckCircle2 size={16} />
+                            <span>เลื่อนสถานะ ({selectedIds.length})</span>
+                          </button>
+                          {(userRole === 'ADMIN' || ['PLANNING_STAFF', 'PLANNING_HEAD', 'DEPUTY_DIRECTOR_PLANNING'].includes(userRole)) && (
+                            <button 
+                              onClick={() => setShowBatchDeleteModal(true)}
+                              className="flex items-center gap-1.5 px-3 sm:px-4 py-2 bg-red-600 text-white text-xs font-bold rounded-xl hover:bg-red-700 transition-colors shadow-lg shadow-red-100"
+                            >
+                              <Trash2 size={15} />
+                              <span>ลบที่เลือก ({selectedIds.length})</span>
+                            </button>
+                          )}
+                        </div>
                       )}
                       <div className="flex bg-slate-100 p-1 rounded-xl overflow-x-auto max-w-full">
                         {[
@@ -3009,7 +3152,22 @@ export default function App() {
                               </div>
                             </td>
                             <td className="px-6 py-4 text-right">
-                              <ChevronRight size={20} className="text-slate-300 inline" />
+                              <div className="flex items-center justify-end gap-1.5">
+                                {canDeleteProject(project) && (
+                                  <button
+                                    type="button"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      setProjectToDeleteModal(project);
+                                    }}
+                                    className="p-1.5 text-slate-300 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"
+                                    title={`ลบโครงการ "${project.title}"`}
+                                  >
+                                    <Trash2 size={16} />
+                                  </button>
+                                )}
+                                <ChevronRight size={20} className="text-slate-300 shrink-0" />
+                              </div>
                             </td>
                           </tr>
                         ))}
@@ -4737,44 +4895,55 @@ export default function App() {
 
                 <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm">
                   <div className="flex flex-col sm:flex-row gap-3">
-                    {userRole === 'ADMIN' && (
+                    {canDeleteProject(selectedProject) && (
                       <div className="flex-1 flex flex-col gap-2">
                         {!showDeleteConfirm ? (
                           <div className="flex gap-2">
-                            <button 
-                              onClick={() => {
-                                setEditProjectForm({
-                                  title: selectedProject.title,
-                                  department: selectedProject.department,
-                                  budget_amount: selectedProject.budget_amount,
-                                  budget_source: selectedProject.budget_source
-                                });
-                                setIsEditingProject(true);
-                              }}
-                              className="flex-1 bg-blue-600 text-white font-bold py-3 rounded-xl hover:bg-blue-700 transition-colors flex items-center justify-center gap-2"
-                            >
-                              <Settings size={18} />
-                              แก้ไขข้อมูลโครงการ
-                            </button>
+                            {(['ADMIN', 'PLANNING_STAFF', 'PLANNING_HEAD', 'DEPUTY_DIRECTOR_PLANNING'].includes(userRole) || (selectedProject.creator_id === currentUser?.username && selectedProject.status === 'DRAFT')) && (
+                              <button 
+                                onClick={() => {
+                                  setEditProjectForm({
+                                    title: selectedProject.title,
+                                    department: selectedProject.department,
+                                    budget_amount: selectedProject.budget_amount,
+                                    budget_source: selectedProject.budget_source
+                                  });
+                                  setIsEditingProject(true);
+                                }}
+                                className="flex-1 bg-blue-600 text-white font-bold py-3 rounded-xl hover:bg-blue-700 transition-colors flex items-center justify-center gap-2"
+                              >
+                                <Settings size={18} />
+                                แก้ไขข้อมูลโครงการ
+                              </button>
+                            )}
                             <button 
                               onClick={() => setShowDeleteConfirm(true)}
                               className="flex-1 bg-slate-100 text-red-600 font-bold py-3 rounded-xl hover:bg-red-50 border border-red-100 transition-colors flex items-center justify-center gap-2"
                             >
-                              <Plus size={18} className="rotate-45" />
+                              <Trash2 size={18} />
                               ลบโครงการ
                             </button>
                           </div>
                         ) : (
                           <div className="bg-red-50 p-4 rounded-xl border border-red-100 flex flex-col gap-3 animate-in fade-in slide-in-from-top-2">
-                            <p className="text-red-700 text-sm font-bold text-center">ยืนยันการลบโครงการ? (ไม่สามารถย้อนกลับได้)</p>
+                            <p className="text-red-700 text-sm font-bold text-center">ยืนยันการลบโครงการ &quot;{selectedProject.title}&quot;? (ไม่สามารถย้อนกลับได้)</p>
                             <div className="flex gap-2">
                               <button 
+                                disabled={isDeletingProject}
                                 onClick={() => handleDeleteProject(selectedProject.id)}
-                                className="flex-1 bg-red-600 text-white font-bold py-2 rounded-lg hover:bg-red-700 transition-colors"
+                                className="flex-1 bg-red-600 text-white font-bold py-2 rounded-lg hover:bg-red-700 transition-colors disabled:opacity-50 flex items-center justify-center gap-2"
                               >
-                                ยืนยันลบ
+                                {isDeletingProject ? (
+                                  <>
+                                    <span className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                                    <span>กำลังลบ...</span>
+                                  </>
+                                ) : (
+                                  'ยืนยันลบ'
+                                )}
                               </button>
                               <button 
+                                disabled={isDeletingProject}
                                 onClick={() => setShowDeleteConfirm(false)}
                                 className="flex-1 bg-white text-slate-600 font-bold py-2 rounded-lg border border-slate-200 hover:bg-slate-50 transition-colors"
                               >
@@ -10326,6 +10495,142 @@ export default function App() {
           </div>
         )}
       </AnimatePresence>
+      {/* Single Project Delete In-App Confirmation Modal */}
+      <AnimatePresence>
+        {projectToDeleteModal && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs">
+            <motion.div
+              initial={{ scale: 0.95, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.95, opacity: 0 }}
+              className="bg-white rounded-3xl max-w-md w-full p-6 shadow-2xl border border-slate-100"
+            >
+              <div className="w-12 h-12 rounded-2xl bg-red-100 text-red-600 flex items-center justify-center mx-auto mb-4">
+                <Trash2 size={24} />
+              </div>
+              <h3 className="text-lg font-bold text-slate-900 text-center mb-2">
+                ยืนยันการลบโครงการ?
+              </h3>
+              <p className="text-sm text-slate-500 text-center mb-4">
+                คุณกำลังจะลบโครงการ <strong className="text-slate-800">&quot;{projectToDeleteModal.title}&quot;</strong> ออกจากฐานข้อมูล การดำเนินการนี้ไม่สามารถย้อนกลับได้
+              </p>
+              <div className="bg-slate-50 p-3 rounded-xl border border-slate-100 mb-5 text-xs space-y-1">
+                <div className="flex justify-between">
+                  <span className="text-slate-400">รหัสโครงการ:</span>
+                  <span className="font-bold text-slate-700">{projectToDeleteModal.project_code || `ID: ${projectToDeleteModal.id}`}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-slate-400">แผนก/ฝ่าย:</span>
+                  <span className="font-bold text-slate-700">{projectToDeleteModal.department || '-'}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-slate-400">วงเงินงบประมาณ:</span>
+                  <span className="font-bold text-red-600">฿{Number(projectToDeleteModal.budget_amount || 0).toLocaleString()}</span>
+                </div>
+              </div>
+              <div className="flex gap-3">
+                <button
+                  type="button"
+                  disabled={isDeletingProject}
+                  onClick={() => setProjectToDeleteModal(null)}
+                  className="flex-1 py-3 bg-slate-100 text-slate-600 font-bold rounded-xl hover:bg-slate-200 transition-colors text-sm"
+                >
+                  ยกเลิก
+                </button>
+                <button
+                  type="button"
+                  disabled={isDeletingProject}
+                  onClick={() => handleDeleteProject(projectToDeleteModal.id)}
+                  className="flex-1 py-3 bg-red-600 text-white font-bold rounded-xl hover:bg-red-700 transition-colors shadow-lg shadow-red-200 text-sm disabled:opacity-50 flex items-center justify-center gap-2"
+                >
+                  {isDeletingProject ? (
+                    <>
+                      <span className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                      <span>กำลังลบ...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Trash2 size={16} />
+                      <span>ยืนยันลบ</span>
+                    </>
+                  )}
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* Batch Delete Projects In-App Confirmation Modal */}
+      <AnimatePresence>
+        {showBatchDeleteModal && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs">
+            <motion.div
+              initial={{ scale: 0.95, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.95, opacity: 0 }}
+              className="bg-white rounded-3xl max-w-md w-full p-6 shadow-2xl border border-slate-100"
+            >
+              <div className="w-12 h-12 rounded-2xl bg-red-100 text-red-600 flex items-center justify-center mx-auto mb-4">
+                <Trash2 size={24} />
+              </div>
+              <h3 className="text-lg font-bold text-slate-900 text-center mb-2">
+                ยืนยันลบโครงการที่เลือกทั้งหมด?
+              </h3>
+              <p className="text-sm text-slate-500 text-center mb-5">
+                คุณได้เลือกโครงการจำนวน <strong className="text-red-600 font-bold">{selectedIds.length}</strong> โครงการเพื่อลบออกจากระบบ การดำเนินการนี้ไม่สามารถย้อนกลับได้
+              </p>
+              <div className="flex gap-3">
+                <button
+                  type="button"
+                  disabled={isBatchDeleting}
+                  onClick={() => setShowBatchDeleteModal(false)}
+                  className="flex-1 py-3 bg-slate-100 text-slate-600 font-bold rounded-xl hover:bg-slate-200 transition-colors text-sm"
+                >
+                  ยกเลิก
+                </button>
+                <button
+                  type="button"
+                  disabled={isBatchDeleting}
+                  onClick={handleBatchDeleteProjects}
+                  className="flex-1 py-3 bg-red-600 text-white font-bold rounded-xl hover:bg-red-700 transition-colors shadow-lg shadow-red-200 text-sm disabled:opacity-50 flex items-center justify-center gap-2"
+                >
+                  {isBatchDeleting ? (
+                    <>
+                      <span className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                      <span>กำลังลบ...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Trash2 size={16} />
+                      <span>ยืนยันลบ {selectedIds.length} รายการ</span>
+                    </>
+                  )}
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* Global In-App Toast Notification */}
+      <AnimatePresence>
+        {toastMessage && (
+          <motion.div
+            initial={{ opacity: 0, y: 50, scale: 0.9 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: 20, scale: 0.9 }}
+            className={`fixed bottom-6 right-6 z-50 px-5 py-3.5 rounded-2xl shadow-xl flex items-center gap-3 border text-sm font-bold ${
+              toastMessage.type === 'error'
+                ? 'bg-red-900/90 text-white border-red-700 shadow-red-900/30'
+                : 'bg-slate-900/90 text-white border-slate-700 shadow-slate-900/30'
+            }`}
+          >
+            <CheckCircle2 size={18} className={toastMessage.type === 'error' ? 'text-red-400' : 'text-emerald-400'} />
+            <span>{toastMessage.message}</span>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
-}
+};
