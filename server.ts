@@ -388,6 +388,69 @@ try {
 // Ensure JSON file contains all synced users
 persistUsersToJson();
 
+// Persistent Vendor File Path Helper
+function getInitialVendorsFilePath(): string {
+  const p1 = path.join(__dirname, 'src', 'data', 'initialVendors.json');
+  if (fs.existsSync(p1)) return p1;
+  const p2 = path.resolve(process.cwd(), 'src', 'data', 'initialVendors.json');
+  if (fs.existsSync(p2)) return p2;
+  const p3 = path.resolve(process.cwd(), 'initialVendors.json');
+  if (fs.existsSync(p3)) return p3;
+  return p1;
+}
+
+// Persist all SQLite vendors back to JSON file so changes are committed to GitHub
+function persistVendorsToJson(): void {
+  try {
+    const targetPath = getInitialVendorsFilePath();
+    const dir = path.dirname(targetPath);
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
+    }
+    const allVendors = db.prepare(`
+      SELECT id, name, address, phone, tax_id, bank_account, bank_name, created_at
+      FROM vendors 
+      ORDER BY id ASC
+    `).all();
+    fs.writeFileSync(targetPath, JSON.stringify(allVendors, null, 2), 'utf-8');
+    console.log(`[Vendors Sync] Saved ${allVendors.length} vendors to ${targetPath}`);
+  } catch (err) {
+    console.error("Failed to persist vendors to JSON:", err);
+  }
+}
+
+// Seed initial vendors from persistent JSON file
+try {
+  const initialVendorsPath = getInitialVendorsFilePath();
+  if (fs.existsSync(initialVendorsPath)) {
+    const initialVendors = JSON.parse(fs.readFileSync(initialVendorsPath, 'utf-8'));
+    const insertVendorStmt = db.prepare(`
+      INSERT OR IGNORE INTO vendors (id, name, address, phone, tax_id, bank_account, bank_name, created_at)
+      VALUES (@id, @name, @address, @phone, @tax_id, @bank_account, @bank_name, @created_at)
+    `);
+    const seedVendorsTx = db.transaction((vendorList) => {
+      for (const v of vendorList) {
+        insertVendorStmt.run({
+          id: v.id,
+          name: v.name,
+          address: v.address || '',
+          phone: v.phone || '',
+          tax_id: v.tax_id || '',
+          bank_account: v.bank_account || '',
+          bank_name: v.bank_name || '',
+          created_at: v.created_at || new Date().toISOString()
+        });
+      }
+    });
+    seedVendorsTx(initialVendors);
+  }
+} catch (e) {
+  console.error("Error seeding initialVendors.json:", e);
+}
+
+// Ensure JSON file contains all synced vendors
+persistVendorsToJson();
+
 // Migration: Add columns if they don't exist
 try { db.exec("ALTER TABLE projects ADD COLUMN project_code TEXT"); } catch (e) {}
 try { db.exec("ALTER TABLE projects ADD COLUMN creator_name TEXT"); } catch (e) {}
@@ -1276,11 +1339,168 @@ async function startServer() {
   // Vendors API
   app.get("/api/vendors", (req, res) => {
     try {
-      const vendors = db.prepare("SELECT * FROM vendors ORDER BY name ASC").all();
+      let vendors = db.prepare("SELECT * FROM vendors ORDER BY name ASC").all();
+      // Auto re-seed if table is empty
+      if (!vendors || vendors.length === 0) {
+        const seedPath = getInitialVendorsFilePath();
+        if (fs.existsSync(seedPath)) {
+          const list = JSON.parse(fs.readFileSync(seedPath, 'utf-8'));
+          const insertStmt = db.prepare(`
+            INSERT OR IGNORE INTO vendors (id, name, address, phone, tax_id, bank_account, bank_name, created_at)
+            VALUES (@id, @name, @address, @phone, @tax_id, @bank_account, @bank_name, @created_at)
+          `);
+          const tx = db.transaction((arr) => {
+            for (const item of arr) {
+              insertStmt.run({
+                id: item.id,
+                name: item.name,
+                address: item.address || '',
+                phone: item.phone || '',
+                tax_id: item.tax_id || '',
+                bank_account: item.bank_account || '',
+                bank_name: item.bank_name || '',
+                created_at: item.created_at || new Date().toISOString()
+              });
+            }
+          });
+          tx(list);
+          vendors = db.prepare("SELECT * FROM vendors ORDER BY name ASC").all();
+        }
+      }
       res.json(vendors);
     } catch (err) {
       console.error("Error fetching vendors:", err);
       res.status(500).json({ error: "Failed to fetch vendors" });
+    }
+  });
+
+  app.get("/api/vendors/export-json", (req, res) => {
+    try {
+      const vendors = db.prepare("SELECT * FROM vendors ORDER BY id ASC").all();
+      res.setHeader('Content-Type', 'application/json');
+      res.setHeader('Content-Disposition', 'attachment; filename="ttc_vendors_full_backup.json"');
+      res.send(JSON.stringify(vendors, null, 2));
+    } catch (err) {
+      console.error("Error exporting vendors JSON:", err);
+      res.status(500).json({ error: "Failed to export vendors" });
+    }
+  });
+
+  app.post("/api/vendors/save-to-git", (req, res) => {
+    try {
+      persistVendorsToJson();
+      const count = db.prepare("SELECT count(*) as c FROM vendors").get() as { c: number };
+      const targetPath = getInitialVendorsFilePath();
+      res.json({
+        success: true,
+        count: count.c,
+        targetPath,
+        message: `บันทึกข้อมูลร้านค้าทั้งหมด ${count.c} รายการลงในไฟล์ ${targetPath} เรียบร้อยแล้ว ข้อมูลจะคงอยู่และพร้อมส่งขึ้น GitHub ทันที`
+      });
+    } catch (err: any) {
+      console.error("Error saving vendors to git JSON:", err);
+      res.status(500).json({ error: "Failed to save vendors to git JSON: " + err.message });
+    }
+  });
+
+  app.post("/api/vendors/sync", (req, res) => {
+    try {
+      const seedPath = getInitialVendorsFilePath();
+      if (!fs.existsSync(seedPath)) {
+        return res.status(404).json({ error: "ไม่พบไฟล์ initialVendors.json ในระบบ" });
+      }
+      const list = JSON.parse(fs.readFileSync(seedPath, 'utf-8'));
+      const upsertStmt = db.prepare(`
+        INSERT INTO vendors (id, name, address, phone, tax_id, bank_account, bank_name, created_at)
+        VALUES (@id, @name, @address, @phone, @tax_id, @bank_account, @bank_name, @created_at)
+        ON CONFLICT(id) DO UPDATE SET
+          name = excluded.name,
+          address = excluded.address,
+          phone = excluded.phone,
+          tax_id = excluded.tax_id,
+          bank_account = excluded.bank_account,
+          bank_name = excluded.bank_name
+      `);
+
+      const tx = db.transaction((arr) => {
+        for (const item of arr) {
+          upsertStmt.run({
+            id: item.id,
+            name: item.name,
+            address: item.address || '',
+            phone: item.phone || '',
+            tax_id: item.tax_id || '',
+            bank_account: item.bank_account || '',
+            bank_name: item.bank_name || '',
+            created_at: item.created_at || new Date().toISOString()
+          });
+        }
+      });
+      tx(list);
+      persistVendorsToJson();
+      const totalCount = db.prepare("SELECT count(*) as c FROM vendors").get() as { c: number };
+      res.json({
+        success: true,
+        message: `ซิงค์ข้อมูลร้านค้าสำเร็จ รวมทั้งสิ้น ${totalCount.c} ร้าน (บันทึกอัปเดตไฟล์ src/data/initialVendors.json เรียบร้อยแล้ว)`,
+        count: totalCount.c
+      });
+    } catch (err: any) {
+      console.error("Error syncing vendors:", err);
+      res.status(500).json({ error: "Failed to sync vendors: " + err.message });
+    }
+  });
+
+  app.post("/api/vendors/bulk", (req, res) => {
+    const { vendors: bulkVendors } = req.body;
+    if (!Array.isArray(bulkVendors)) {
+      return res.status(400).json({ error: "รูปแบบข้อมูลไม่ถูกต้อง" });
+    }
+
+    try {
+      const checkStmt = db.prepare("SELECT id FROM vendors WHERE name = ? OR (tax_id = ? AND tax_id != '')");
+      const insertStmt = db.prepare(`
+        INSERT INTO vendors (name, address, phone, tax_id, bank_account, bank_name)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `);
+      
+      const transaction = db.transaction((list) => {
+        let added = 0;
+        let skipped = 0;
+        let total = 0;
+
+        for (const v of list) {
+          if (!v.name) continue;
+          total++;
+          const name = String(v.name).trim();
+          const taxId = String(v.tax_id || '').trim();
+          const existing = checkStmt.get(name, taxId);
+          if (existing) {
+            skipped++;
+            continue;
+          }
+          insertStmt.run(
+            name,
+            String(v.address || '').trim(),
+            String(v.phone || '').trim(),
+            taxId,
+            String(v.bank_account || '').trim(),
+            String(v.bank_name || '').trim()
+          );
+          added++;
+        }
+        return { total, added, skipped };
+      });
+
+      const stats = transaction(bulkVendors);
+      persistVendorsToJson();
+      res.json({
+        success: true,
+        message: `นำเข้าร้านค้าเสร็จสิ้น: เพิ่มใหม่ ${stats.added} ร้าน, ข้าม ${stats.skipped} ร้าน (มีในระบบแล้ว), รวมทั้งสิ้น ${stats.total} ร้าน (บันทึกอัปเดตไฟล์ src/data/initialVendors.json เรียบร้อยแล้ว)`,
+        stats
+      });
+    } catch (err: any) {
+      console.error("Bulk import vendors error:", err);
+      res.status(500).json({ error: "Bulk import failed: " + err.message });
     }
   });
 
@@ -1291,6 +1511,7 @@ async function startServer() {
         INSERT INTO vendors (name, address, phone, tax_id, bank_account, bank_name)
         VALUES (?, ?, ?, ?, ?, ?)
       `).run(name, address, phone, tax_id, bank_account, bank_name);
+      persistVendorsToJson();
       res.json({ id: info.lastInsertRowid, success: true });
     } catch (err) {
       res.status(500).json({ error: "Failed to create vendor" });
@@ -1305,6 +1526,7 @@ async function startServer() {
         SET name = ?, address = ?, phone = ?, tax_id = ?, bank_account = ?, bank_name = ?
         WHERE id = ?
       `).run(name, address, phone, tax_id, bank_account, bank_name, req.params.id);
+      persistVendorsToJson();
       res.json({ success: true });
     } catch (err) {
       res.status(500).json({ error: "Failed to update vendor" });
@@ -1314,6 +1536,7 @@ async function startServer() {
   app.delete("/api/vendors/:id", (req, res) => {
     try {
       db.prepare("DELETE FROM vendors WHERE id = ?").run(req.params.id);
+      persistVendorsToJson();
       res.json({ success: true });
     } catch (err) {
       res.status(500).json({ error: "Failed to delete vendor" });

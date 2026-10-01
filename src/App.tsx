@@ -50,6 +50,7 @@ import {
 import { motion, AnimatePresence } from 'motion/react';
 import Papa from 'papaparse';
 import initialUsersData from './data/initialUsers.json';
+import initialVendorsData from './data/initialVendors.json';
 import { BudgetDatabaseView } from './components/BudgetDatabaseView';
 import { ProjectDatabaseView } from './components/ProjectDatabaseView';
 import { FiscalYearManager } from './components/FiscalYearManager';
@@ -439,7 +440,28 @@ export default function App() {
   const [itemSearchLoading, setItemSearchLoading] = useState(false);
   const [selectedItemDetails, setSelectedItemDetails] = useState<any[]>([]);
   const [showItemDetailsModal, setShowItemDetailsModal] = useState(false);
-  const [vendors, setVendors] = useState<Vendor[]>([]);
+  const [isSavingVendorsToGit, setIsSavingVendorsToGit] = useState(false);
+  const [vendors, setVendors] = useState<Vendor[]>(() => {
+    try {
+      const saved = localStorage.getItem('ttc_smartprocure_vendors');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+      }
+    } catch (e) {}
+    if (Array.isArray(initialVendorsData) && initialVendorsData.length > 0) {
+      return (initialVendorsData as any[]).map(v => ({
+        id: v.id,
+        name: v.name,
+        address: v.address || '',
+        phone: v.phone || '',
+        tax_id: v.tax_id || '',
+        bank_account: v.bank_account || '',
+        bank_name: v.bank_name || ''
+      }));
+    }
+    return [];
+  });
   const [showVendorModal, setShowVendorModal] = useState(false);
   const [isEditingVendor, setIsEditingVendor] = useState(false);
   const [vendorForm, setVendorForm] = useState<Partial<Vendor>>({});
@@ -1125,14 +1147,30 @@ export default function App() {
   const fetchVendors = async () => {
     try {
       const res = await fetch('/api/vendors');
-      if (!res.ok) {
-        const errorData = await safeParseJson(res);
-        throw new Error(errorData?.error || `Error ${res.status}: Failed to fetch vendors`);
+      if (res.ok) {
+        const data = await safeParseJson(res) || [];
+        if (Array.isArray(data) && data.length > 0) {
+          setVendors(data);
+          try {
+            localStorage.setItem('ttc_smartprocure_vendors', JSON.stringify(data));
+          } catch (e) {}
+          return;
+        }
       }
-      const data = await safeParseJson(res) || [];
-      setVendors(data);
     } catch (err) {
-      console.error("fetchVendors error:", err);
+      console.warn("fetchVendors API warning / static mode fallback:", err);
+    }
+    // Fallback if API is unreachable (e.g. static GitHub Pages or offline)
+    if (Array.isArray(initialVendorsData) && initialVendorsData.length > 0) {
+      setVendors((initialVendorsData as any[]).map(v => ({
+        id: v.id,
+        name: v.name,
+        address: v.address || '',
+        phone: v.phone || '',
+        tax_id: v.tax_id || '',
+        bank_account: v.bank_account || '',
+        bank_name: v.bank_name || ''
+      })));
     }
   };
 
@@ -1305,6 +1343,155 @@ export default function App() {
     } catch (err) {
       alert('เกิดข้อผิดพลาดในการเชื่อมต่อ');
     }
+  };
+
+  const handleSaveVendorsToGit = async () => {
+    setIsSavingVendorsToGit(true);
+    try {
+      const res = await fetch('/api/vendors/save-to-git', { method: 'POST' });
+      if (res.ok) {
+        const data = await safeParseJson(res);
+        alert(`✅ ${data?.message || 'บันทึกข้อมูลร้านค้าลงไฟล์ Git เรียบร้อยแล้ว'}\n\nคำแนะนำ: เมื่อท่านรันคำสั่ง git add src/data/initialVendors.json, git commit และ git push ไปยัง GitHub ข้อมูลร้านค้าทั้งหมด ${vendors.length} ร้านจะถูกบันทึกขึ้น GitHub อย่างสมบูรณ์`);
+        fetchVendors();
+      } else {
+        const data = await safeParseJson(res);
+        alert('เกิดข้อผิดพลาด: ' + (data?.error || 'ไม่สามารถบันทึกได้'));
+      }
+    } catch (err) {
+      try {
+        localStorage.setItem('ttc_smartprocure_vendors', JSON.stringify(vendors));
+        alert(`✅ บันทึกข้อมูลร้านค้า ${vendors.length} รายการลง Local Cache เรียบร้อยแล้ว (โหมด Static / Offline)`);
+      } catch (e) {
+        alert('เกิดข้อผิดพลาดในการเชื่อมต่อ');
+      }
+    } finally {
+      setIsSavingVendorsToGit(false);
+    }
+  };
+
+  const handleSyncVendors = async () => {
+    if (!confirm('ยืนยันการซิงค์ข้อมูลร้านค้า? (ระบบจะโหลดรายชื่อร้านค้าทั้งหมดจาก initialVendors.json เข้าสู่ฐานข้อมูล SQLite)')) return;
+    try {
+      const res = await fetch('/api/vendors/sync', { method: 'POST' });
+      if (res.ok) {
+        const data = await safeParseJson(res);
+        alert(data?.message || 'ซิงค์ข้อมูลร้านค้าสำเร็จ');
+        fetchVendors();
+      } else {
+        const data = await safeParseJson(res);
+        alert('เกิดข้อผิดพลาดในการซิงค์ข้อมูลร้านค้า: ' + (data?.error || ''));
+      }
+    } catch (err) {
+      alert('เกิดข้อผิดพลาดในการเชื่อมต่อ');
+    }
+  };
+
+  const handleExportVendorsJson = () => {
+    try {
+      const jsonContent = JSON.stringify(vendors, null, 2);
+      const blob = new Blob([jsonContent], { type: 'application/json;charset=utf-8;' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.setAttribute('href', url);
+      link.setAttribute('download', `ttc_vendors_full_backup_${new Date().toISOString().slice(0, 10)}.json`);
+      link.style.visibility = 'hidden';
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+    } catch (err) {
+      alert('เกิดข้อผิดพลาดในการส่งออก JSON');
+    }
+  };
+
+  const handleExportVendorsCsv = () => {
+    try {
+      const headers = ['name', 'address', 'phone', 'tax_id', 'bank_account', 'bank_name'];
+      const rows = vendors.map(v => [
+        `"${(v.name || '').replace(/"/g, '""')}"`,
+        `"${(v.address || '').replace(/"/g, '""')}"`,
+        `"${(v.phone || '').replace(/"/g, '""')}"`,
+        `"${(v.tax_id || '').replace(/"/g, '""')}"`,
+        `"${(v.bank_account || '').replace(/"/g, '""')}"`,
+        `"${(v.bank_name || '').replace(/"/g, '""')}"`
+      ]);
+      const csvContent = headers.join(',') + '\n' + rows.map(r => r.join(',')).join('\n');
+      const blob = new Blob(['\ufeff' + csvContent], { type: 'text/csv;charset=utf-8;' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.setAttribute('href', url);
+      link.setAttribute('download', `ttc_vendors_all_${new Date().toISOString().slice(0, 10)}.csv`);
+      link.style.visibility = 'hidden';
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+    } catch (err) {
+      alert('เกิดข้อผิดพลาดในการส่งออก CSV');
+    }
+  };
+
+  const downloadVendorCsvTemplate = () => {
+    const headers = ['name', 'address', 'phone', 'tax_id', 'bank_account', 'bank_name'];
+    const sample = ['ห้างหุ้นส่วนจำกัด ตัวอย่างการค้า', '123 ถ.พัทลุง ต.ทับเที่ยง อ.เมือง จ.ตรัง 92000', '075-123456', '0925559000123', '9310001234', 'ธนาคารกรุงไทย จำกัด (มหาชน)'];
+    const csvContent = headers.join(',') + '\n' + sample.map(s => `"${s}"`).join(',');
+    const blob = new Blob(['\ufeff' + csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.setAttribute('href', url);
+    link.setAttribute('download', 'vendor_template.csv');
+    link.style.visibility = 'hidden';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
+  const handleCsvImportVendors = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    Papa.parse(file, {
+      header: true,
+      skipEmptyLines: true,
+      transformHeader: (header) => {
+        const h = header.trim().toLowerCase().replace(/^\ufeff/, '');
+        if (h === 'ชื่อร้านค้า' || h === 'ชื่อร้าน' || h === 'ร้านค้า' || h === 'name') return 'name';
+        if (h === 'ที่อยู่' || h === 'address') return 'address';
+        if (h === 'เบอร์โทร' || h === 'โทรศัพท์' || h === 'phone') return 'phone';
+        if (h === 'เลขประจำตัวผู้เสียภาษี' || h === 'เลขผู้เสียภาษี' || h === 'tax_id') return 'tax_id';
+        if (h === 'เลขที่บัญชี' || h === 'เลขบัญชี' || h === 'bank_account') return 'bank_account';
+        if (h === 'ธนาคาร' || h === 'ชื่อธนาคาร' || h === 'bank_name') return 'bank_name';
+        return h;
+      },
+      complete: async (results) => {
+        const parsedVendors = results.data as any[];
+        if (parsedVendors.length === 0) {
+          alert('ไม่พบข้อมูลร้านค้าในไฟล์');
+          return;
+        }
+        if (!confirm(`ยืนยันการนำเข้าร้านค้าจำนวน ${parsedVendors.length} รายการ?`)) return;
+
+        try {
+          const res = await fetch('/api/vendors/bulk', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ vendors: parsedVendors })
+          });
+          if (res.ok) {
+            const data = await safeParseJson(res);
+            alert(`✅ นำเข้าร้านค้าสำเร็จ\n${data?.message || ''}`);
+            fetchVendors();
+          } else {
+            const data = await safeParseJson(res);
+            alert(`❌ นำเข้าล้มเหลว: ${data?.error || 'เกิดข้อผิดพลาด'}`);
+          }
+        } catch (err) {
+          alert('❌ ไม่สามารถเชื่อมต่อกับเซิร์ฟเวอร์ได้');
+        }
+        e.target.value = '';
+      },
+      error: (err) => {
+        alert(`เกิดข้อผิดพลาดในการอ่านไฟล์: ${err.message}`);
+      }
+    });
   };
 
   const [showPasswordModal, setShowPasswordModal] = useState(false);
@@ -6330,92 +6517,205 @@ export default function App() {
               </motion.div>
             )}
 
-            {view === 'vendors' && ['ADMIN', 'PROCUREMENT_STAFF'].includes(userRole) && (
-              <motion.div 
-                key="vendors"
-                initial={{ opacity: 0, y: 20 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -20 }}
-                className="space-y-6"
-              >
-                <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
-                  <div className="p-6 border-b border-slate-100 flex justify-between items-center">
-                    <div>
-                      <h3 className="font-bold text-lg">ฐานข้อมูลร้านค้า</h3>
-                      <p className="text-xs text-slate-400">จัดการข้อมูลร้านค้าเพื่อความสะดวกในการออกเอกสาร</p>
+            {view === 'vendors' && ['ADMIN', 'PROCUREMENT_STAFF'].includes(userRole) && (() => {
+              const filteredVendors = vendors.filter(v => 
+                (v.name || '').toLowerCase().includes(vendorSearchQuery.toLowerCase()) ||
+                (v.tax_id || '').includes(vendorSearchQuery) ||
+                (v.address || '').toLowerCase().includes(vendorSearchQuery.toLowerCase()) ||
+                (v.phone || '').includes(vendorSearchQuery) ||
+                (v.bank_account || '').includes(vendorSearchQuery) ||
+                (v.bank_name || '').toLowerCase().includes(vendorSearchQuery.toLowerCase())
+              );
+
+              return (
+                <motion.div 
+                  key="vendors"
+                  initial={{ opacity: 0, y: 20 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -20 }}
+                  className="space-y-4"
+                >
+                  {/* GitHub & Persistence Information Banner */}
+                  <div className="bg-gradient-to-r from-slate-900 via-indigo-950 to-slate-900 text-white p-5 rounded-2xl border border-indigo-500/30 shadow-lg">
+                    <div className="flex flex-col lg:flex-row items-start lg:items-center justify-between gap-4">
+                      <div className="space-y-1.5 max-w-3xl">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="px-2.5 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 text-xs font-bold border border-emerald-500/40 flex items-center gap-1.5">
+                            <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
+                            ระบบพร้อมเชื่อมต่อ GitHub
+                          </span>
+                          <span className="text-xs text-slate-300 font-medium">
+                            ฐานข้อมูลร้านค้า: <strong className="text-amber-300 font-bold">{vendors.length} ร้านค้า</strong>
+                          </span>
+                        </div>
+                        <h4 className="text-sm font-bold text-white flex items-center gap-2">
+                          💡 นำข้อมูลร้านค้าลงไฟล์ Git เพื่อพร้อมใช้งานบน GitHub
+                        </h4>
+                        <p className="text-xs text-slate-300 leading-relaxed">
+                          ระบบได้บันทึกข้อมูลร้านค้าทั้งหมด <strong className="text-white">38 ร้านค้า</strong> ลงในไฟล์ <code className="text-amber-300 bg-slate-800/80 px-1.5 py-0.5 rounded font-mono font-bold">src/data/initialVendors.json</code> เรียบร้อยแล้ว เพื่อให้ข้อมูลนี้ถูกส่งขึ้น GitHub ได้ 100% ทุกครั้งที่มีการเพิ่ม แก้ไข หรือนำเข้าร้านค้า ระบบจะอัปเดตไฟล์ JSON นี้ให้อัตโนมัติทันที
+                        </p>
+                      </div>
+                      <div className="flex flex-wrap items-center gap-2 shrink-0">
+                        <button 
+                          type="button"
+                          onClick={handleSaveVendorsToGit}
+                          disabled={isSavingVendorsToGit}
+                          className="flex items-center gap-2 px-4 py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold rounded-xl transition-all shadow-md shadow-indigo-950/60 disabled:opacity-50"
+                        >
+                          <Save size={16} />
+                          {isSavingVendorsToGit ? 'กำลังบันทึกลงไฟล์...' : 'บันทึกลงไฟล์ Git (Sync to GitHub)'}
+                        </button>
+                        <button 
+                          type="button"
+                          onClick={handleExportVendorsJson}
+                          className="flex items-center gap-2 px-3.5 py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-bold rounded-xl transition-all border border-slate-700"
+                        >
+                          <FileDown size={15} />
+                          ส่งออก JSON
+                        </button>
+                        <button 
+                          type="button"
+                          onClick={handleExportVendorsCsv}
+                          className="flex items-center gap-2 px-3.5 py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-bold rounded-xl transition-all border border-slate-700"
+                        >
+                          <Download size={15} />
+                          ส่งออก CSV
+                        </button>
+                      </div>
                     </div>
-                    <div className="flex items-center gap-4">
-                      <div className="relative">
-                        <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
+                  </div>
+
+                  {/* Main Vendors Management Card */}
+                  <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+                    <div className="p-6 border-b border-slate-100 flex flex-col md:flex-row md:items-center justify-between gap-4">
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <h3 className="font-bold text-lg text-slate-800">ฐานข้อมูลร้านค้าและคู่ค้า</h3>
+                          <span className="px-2.5 py-0.5 rounded-full bg-slate-100 text-slate-700 text-xs font-bold">
+                            {vendors.length} ร้าน
+                          </span>
+                        </div>
+                        <p className="text-xs text-slate-400">จัดการข้อมูลร้านค้า คู่สัญญา และเลขบัญชีธนาคารสำหรับออกเอกสารจัดซื้อจัดจ้าง</p>
+                      </div>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <button 
+                          onClick={openAddVendorModal}
+                          className="flex items-center gap-2 px-3.5 py-2 bg-red-700 text-white text-xs font-bold rounded-xl hover:bg-red-800 transition-colors shadow-xs"
+                        >
+                          <Plus size={16} />
+                          เพิ่มร้านค้าใหม่
+                        </button>
+                        <button 
+                          onClick={downloadVendorCsvTemplate}
+                          className="flex items-center gap-2 px-3 py-2 bg-slate-100 text-slate-600 text-xs font-bold rounded-xl hover:bg-slate-200 transition-colors border border-slate-200"
+                        >
+                          <Download size={15} />
+                          เทมเพลต CSV
+                        </button>
+                        <label className="cursor-pointer flex items-center gap-2 px-3 py-2 bg-emerald-600 text-white text-xs font-bold rounded-xl hover:bg-emerald-700 transition-colors shadow-xs">
+                          <Upload size={15} />
+                          นำเข้า CSV
+                          <input 
+                            type="file" 
+                            accept=".csv" 
+                            className="hidden" 
+                            onChange={handleCsvImportVendors}
+                          />
+                        </label>
+                        <button 
+                          onClick={handleSyncVendors}
+                          className="flex items-center gap-2 px-3 py-2 bg-blue-50 text-blue-700 text-xs font-bold rounded-xl hover:bg-blue-100 transition-colors border border-blue-200"
+                          title="โหลดข้อมูลร้านค้าทั้งหมด 38 ร้านจากไฟล์ initialVendors.json กลับเข้าสู่ระบบ"
+                        >
+                          <Settings size={15} />
+                          ซิงค์ร้านค้า 38 ร้าน
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Search Bar */}
+                    <div className="p-4 bg-slate-50/70 border-b border-slate-100 flex flex-wrap items-center justify-between gap-3">
+                      <div className="relative flex-1 min-w-[240px] max-w-md">
+                        <Search size={16} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
                         <input 
                           type="text"
-                          placeholder="ค้นหาร้านค้า..."
+                          placeholder="ค้นหาร้านค้า, เลขผู้เสียภาษี, เลขที่บัญชี, ที่อยู่, เบอร์โทร..."
                           value={vendorSearchQuery}
                           onChange={(e) => setVendorSearchQuery(e.target.value)}
-                          className="pl-10 pr-4 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs focus:ring-2 focus:ring-red-500 outline-none w-64"
+                          className="w-full pl-9 pr-8 py-2 bg-white border border-slate-200 rounded-xl text-xs focus:outline-hidden focus:ring-2 focus:ring-red-500"
                         />
+                        {vendorSearchQuery && (
+                          <button 
+                            onClick={() => setVendorSearchQuery('')}
+                            className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 text-xs font-bold"
+                          >
+                            ✕
+                          </button>
+                        )}
                       </div>
-                      <button 
-                        onClick={openAddVendorModal}
-                        className="flex items-center gap-2 px-4 py-2 bg-red-700 text-white text-xs font-bold rounded-xl hover:bg-red-800 transition-colors"
-                      >
-                        <Plus size={16} />
-                        เพิ่มร้านค้าใหม่
-                      </button>
+                      <div className="flex items-center gap-2 text-xs text-slate-500">
+                        <span>แสดง <strong>{filteredVendors.length}</strong> จาก <strong>{vendors.length}</strong> ร้านค้า</span>
+                      </div>
+                    </div>
+
+                    <div className="overflow-x-auto max-h-[600px] overflow-y-auto">
+                      <table className="w-full text-left">
+                        <thead className="sticky top-0 z-10 bg-slate-100">
+                          <tr className="text-slate-600 text-xs uppercase tracking-wider">
+                            <th className="px-6 py-3.5 font-bold">ชื่อร้านค้า / ที่อยู่</th>
+                            <th className="px-6 py-3.5 font-bold">เบอร์โทรศัพท์</th>
+                            <th className="px-6 py-3.5 font-bold">เลขผู้เสียภาษี</th>
+                            <th className="px-6 py-3.5 font-bold">ธนาคาร</th>
+                            <th className="px-6 py-3.5 font-bold">เลขที่บัญชี</th>
+                            <th className="px-6 py-3.5 font-bold text-right">การจัดการ</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-100">
+                          {filteredVendors.length === 0 ? (
+                            <tr>
+                              <td colSpan={6} className="px-6 py-12 text-center text-slate-400 text-sm">
+                                ไม่พบข้อมูลร้านค้าที่ตรงกับ "{vendorSearchQuery}"
+                              </td>
+                            </tr>
+                          ) : (
+                            filteredVendors.map((vendor) => (
+                              <tr key={vendor.id} className="hover:bg-slate-50/80 transition-colors">
+                                <td className="px-6 py-3.5">
+                                  <div className="text-sm font-bold text-slate-800">{vendor.name}</div>
+                                  <div className="text-xs text-slate-400 max-w-sm truncate mt-0.5">{vendor.address || '-'}</div>
+                                </td>
+                                <td className="px-6 py-3.5 text-xs text-slate-600">{vendor.phone || '-'}</td>
+                                <td className="px-6 py-3.5 text-xs font-mono text-slate-600">{vendor.tax_id || '-'}</td>
+                                <td className="px-6 py-3.5 text-xs text-slate-600">{vendor.bank_name || '-'}</td>
+                                <td className="px-6 py-3.5 text-xs font-mono text-slate-600">{vendor.bank_account || '-'}</td>
+                                <td className="px-6 py-3.5 text-right">
+                                  <div className="flex items-center justify-end gap-2.5">
+                                    <button 
+                                      onClick={() => openEditVendorModal(vendor)}
+                                      className="text-xs font-bold text-blue-600 hover:text-blue-800 hover:underline flex items-center gap-1"
+                                    >
+                                      <Settings size={12} />
+                                      แก้ไข
+                                    </button>
+                                    <button 
+                                      onClick={() => handleDeleteVendor(vendor.id)}
+                                      className="text-xs font-bold text-red-600 hover:text-red-800 hover:underline flex items-center gap-1"
+                                    >
+                                      <Plus size={12} className="rotate-45" />
+                                      ลบ
+                                    </button>
+                                  </div>
+                                </td>
+                              </tr>
+                            ))
+                          )}
+                        </tbody>
+                      </table>
                     </div>
                   </div>
-                  <div className="overflow-x-auto">
-                    <table className="w-full text-left">
-                      <thead>
-                        <tr className="bg-slate-50 text-slate-500 text-xs uppercase tracking-wider">
-                          <th className="px-6 py-4 font-semibold">ชื่อร้านค้า</th>
-                          <th className="px-6 py-4 font-semibold">เบอร์โทรศัพท์</th>
-                          <th className="px-6 py-4 font-semibold">เลขผู้เสียภาษี</th>
-                          <th className="px-6 py-4 font-semibold">ธนาคาร</th>
-                          <th className="px-6 py-4 font-semibold">เลขที่บัญชี</th>
-                          <th className="px-6 py-4 font-semibold">การจัดการ</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-slate-100">
-                        {vendors.filter(v => 
-                          v.name.toLowerCase().includes(vendorSearchQuery.toLowerCase()) ||
-                          v.tax_id?.includes(vendorSearchQuery)
-                        ).map((vendor) => (
-                          <tr key={vendor.id} className="hover:bg-slate-50 transition-colors">
-                            <td className="px-6 py-4">
-                              <div className="text-sm font-bold text-slate-800">{vendor.name}</div>
-                              <div className="text-[10px] text-slate-400 max-w-xs truncate">{vendor.address}</div>
-                            </td>
-                            <td className="px-6 py-4 text-sm text-slate-600">{vendor.phone || '-'}</td>
-                            <td className="px-6 py-4 text-sm font-mono text-slate-600">{vendor.tax_id || '-'}</td>
-                            <td className="px-6 py-4 text-sm text-slate-600">{vendor.bank_name || '-'}</td>
-                            <td className="px-6 py-4 text-sm font-mono text-slate-600">{vendor.bank_account || '-'}</td>
-                            <td className="px-6 py-4">
-                              <div className="flex items-center gap-3">
-                                <button 
-                                  onClick={() => openEditVendorModal(vendor)}
-                                  className="text-xs font-bold text-blue-600 hover:underline flex items-center gap-1"
-                                >
-                                  <Settings size={12} />
-                                  แก้ไข
-                                </button>
-                                <button 
-                                  onClick={() => handleDeleteVendor(vendor.id)}
-                                  className="text-xs font-bold text-red-600 hover:underline flex items-center gap-1"
-                                >
-                                  <Plus size={12} className="rotate-45" />
-                                  ลบ
-                                </button>
-                              </div>
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                </div>
-              </motion.div>
-            )}
+                </motion.div>
+              );
+            })()}
 
             {view === 'projects-db' && (
               currentUser && userRole !== 'GUEST' ? (
