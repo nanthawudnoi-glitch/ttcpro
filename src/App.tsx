@@ -44,10 +44,12 @@ import {
   KeyRound,
   Copy,
   Check,
-  ShieldCheck
+  ShieldCheck,
+  Save
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import Papa from 'papaparse';
+import initialUsersData from './data/initialUsers.json';
 import { BudgetDatabaseView } from './components/BudgetDatabaseView';
 import { ProjectDatabaseView } from './components/ProjectDatabaseView';
 import { FiscalYearManager } from './components/FiscalYearManager';
@@ -246,8 +248,8 @@ const DEMO_ACCOUNTS: DemoAccount[] = [
 ];
 
 // Fallback users mapping for static hosting (e.g., Vercel static deployment where backend /api is unavailable)
-const SYSTEM_FALLBACK_USERS: Record<string, { role: string; name: string; position: string; defaultPass: string }> = {
-  admin: { role: 'ADMIN', name: 'ผู้ดูแลระบบ', position: 'ผู้ดูแลระบบ', defaultPass: 'admin123' },
+const SYSTEM_FALLBACK_USERS: Record<string, { role: string; name: string; position: string; defaultPass: string; email?: string }> = {
+  admin: { role: 'ADMIN', name: 'ผู้ดูแลระบบ', position: 'ผู้ดูแลระบบ', defaultPass: 'admin123', email: 'admin@ttc.ac.th' },
   plan_staff: { role: 'PLANNING_STAFF', name: 'เจ้าหน้าที่งานวางแผน', position: 'เจ้าหน้าที่งานพัฒนายุทธศาสตร์ แผนงานและงบประมาณ', defaultPass: 'password' },
   plan_head: { role: 'PLANNING_HEAD', name: 'หัวหน้างานวางแผน', position: 'หัวหน้างานพัฒนายุทธศาสตร์ แผนงานและงบประมาณ', defaultPass: 'password' },
   proc_staff: { role: 'PROCUREMENT_STAFF', name: 'เจ้าหน้าที่งานพัสดุ', position: 'เจ้าหน้าที่งานพัสดุ', defaultPass: 'password' },
@@ -256,10 +258,26 @@ const SYSTEM_FALLBACK_USERS: Record<string, { role: string; name: string; positi
   fin_head: { role: 'FINANCE_HEAD', name: 'หัวหน้างานการเงิน', position: 'หัวหน้างานการเงิน', defaultPass: 'password' },
   director: { role: 'DIRECTOR', name: 'ผู้อำนวยการ', position: 'ผู้อำนวยการวิทยาลัย', defaultPass: 'password' },
   deputy_plan: { role: 'DEPUTY_DIRECTOR_PLANNING', name: 'รองผู้อำนวยการฝ่ายยุทธศาสตร์และแผนงาน', position: 'รองผู้อำนวยการฝ่ายยุทธศาสตร์และแผนงาน', defaultPass: 'password' },
-  deputy_res: { role: 'DEPUTY_DIRECTOR_RESOURCES', name: 'นายนันธวุฒิ น้อย', position: 'รองผู้อำนวยการฝ่ายบริหารทรัพยากร', defaultPass: 'password' },
+  deputy_res: { role: 'DEPUTY_DIRECTOR_RESOURCES', name: 'นายนันธวุฒิ น้อย', position: 'รองผู้อำนวยการฝ่ายบริหารทรัพยากร', defaultPass: 'password', email: 'nanthawudnoi@gmail.com' },
   staff: { role: 'STAFF', name: 'บุคลากร', position: 'บุคลากร', defaultPass: 'password' },
   guest: { role: 'GUEST', name: 'ผู้เข้าชมทั่วไป', position: 'ผู้เข้าชมทั่วไป', defaultPass: 'password' }
 };
+
+// Merge all 203 institutional users into fallback mapping
+if (Array.isArray(initialUsersData)) {
+  for (const u of initialUsersData as any[]) {
+    if (u && u.username) {
+      const uKey = String(u.username).trim().toLowerCase();
+      SYSTEM_FALLBACK_USERS[uKey] = {
+        role: u.role || 'STAFF',
+        name: u.name || u.username,
+        position: u.position || 'บุคลากร',
+        defaultPass: u.password || u.username,
+        email: u.email || undefined
+      };
+    }
+  }
+}
 
 const FALLBACK_PROJECTS: Project[] = [
   {
@@ -372,7 +390,27 @@ export default function App() {
   });
   const [loginForm, setLoginForm] = useState({ username: '', password: '' });
   const [loginError, setLoginError] = useState('');
-  const [users, setUsers] = useState<User[]>([]);
+  const [userSearchQuery, setUserSearchQuery] = useState('');
+  const [isSavingToGit, setIsSavingToGit] = useState(false);
+  const [users, setUsers] = useState<User[]>(() => {
+    try {
+      const saved = localStorage.getItem('ttc_smartprocure_users');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+      }
+    } catch (e) {}
+    if (Array.isArray(initialUsersData) && initialUsersData.length > 0) {
+      return (initialUsersData as any[]).map(u => ({
+        username: u.username,
+        role: (u.role || 'STAFF') as UserRole,
+        name: u.name || u.username,
+        position: u.position || 'บุคลากร',
+        email: u.email || undefined
+      }));
+    }
+    return [];
+  });
   const [isEditingUser, setIsEditingUser] = useState(false);
   const [userForm, setUserForm] = useState<Partial<User & { password?: string }>>({});
   const [showUserModal, setShowUserModal] = useState(false);
@@ -1162,16 +1200,34 @@ export default function App() {
   const fetchUsers = async () => {
     try {
       const res = await fetch('/api/users');
-      if (!res.ok) {
-        const errorData = await safeParseJson(res);
-        throw new Error(errorData?.error || `Error ${res.status}: Failed to fetch users`);
+      if (res.ok) {
+        const data = await safeParseJson(res) || [];
+        if (Array.isArray(data) && data.length > 0) {
+          setUsers(data);
+          try {
+            localStorage.setItem('ttc_smartprocure_users', JSON.stringify(data));
+          } catch (e) {}
+          return;
+        }
       }
-      const data = await safeParseJson(res) || [];
-      setUsers(data);
     } catch (err) {
-      console.error("fetchUsers error:", err);
+      console.warn("fetchUsers API not reachable or in static mode:", err);
+    }
+    // Fallback if API fails (e.g. running statically from GitHub Pages or disconnected)
+    if (Array.isArray(initialUsersData) && initialUsersData.length > 0) {
+      setUsers((initialUsersData as any[]).map(u => ({
+        username: u.username,
+        role: (u.role || 'STAFF') as UserRole,
+        name: u.name || u.username,
+        position: u.position || 'บุคลากร',
+        email: u.email || undefined
+      })));
     }
   };
+
+  useEffect(() => {
+    fetchUsers();
+  }, []);
 
   useEffect(() => {
     if (currentUser) {
@@ -1290,16 +1346,86 @@ export default function App() {
   };
 
   const handleSyncUsers = async () => {
-    if (!confirm('ยืนยันการซิงค์ข้อมูลผู้ใช้งาน? (ระบบจะเพิ่มบัญชีที่ขาดหายไปกลับคืนมา)')) return;
+    if (!confirm('ยืนยันการซิงค์ข้อมูลผู้ใช้งาน? (ระบบจะโหลดรายชื่อบุคลากรทั้งหมด 203 คนจาก initialUsers.json และบันทึกเข้าสู่ฐานข้อมูล SQLite)')) return;
     try {
       const res = await fetch('/api/users/sync', { method: 'POST' });
       if (res.ok) {
         const data = await safeParseJson(res);
         alert(data?.message || 'ซิงค์ข้อมูลสำเร็จ');
         fetchUsers();
+      } else {
+        const data = await safeParseJson(res);
+        alert('เกิดข้อผิดพลาดในการซิงค์ข้อมูล: ' + (data?.error || ''));
       }
     } catch (err) {
-      alert('เกิดข้อผิดพลาดในการซิงค์ข้อมูล');
+      alert('เกิดข้อผิดพลาดในการเชื่อมต่อ');
+    }
+  };
+
+  const handleSaveUsersToGit = async () => {
+    setIsSavingToGit(true);
+    try {
+      const res = await fetch('/api/users/save-to-git', { method: 'POST' });
+      if (res.ok) {
+        const data = await safeParseJson(res);
+        alert(`✅ ${data?.message || 'บันทึกข้อมูลสำเร็จ'}\n\nคำแนะนำ: เมื่อท่านรันคำสั่ง git add, git commit และ git push ไปยัง GitHub ข้อมูลรายชื่อผู้ใช้งานทั้งหมด ${users.length} คนจะถูกบันทึกขึ้น GitHub อย่างสมบูรณ์`);
+        fetchUsers();
+      } else {
+        const data = await safeParseJson(res);
+        alert('เกิดข้อผิดพลาด: ' + (data?.error || 'ไม่สามารถบันทึกได้'));
+      }
+    } catch (err) {
+      // In offline / static mode, save to localStorage
+      try {
+        localStorage.setItem('ttc_smartprocure_users', JSON.stringify(users));
+        alert(`✅ บันทึกรายชื่อผู้ใช้ ${users.length} รายการลง Local Cache สำเร็จแล้ว (โหมด Static / Offline)`);
+      } catch (e) {
+        alert('เกิดข้อผิดพลาดในการเชื่อมต่อ');
+      }
+    } finally {
+      setIsSavingToGit(false);
+    }
+  };
+
+  const handleExportUsersJson = () => {
+    try {
+      const jsonContent = JSON.stringify(users, null, 2);
+      const blob = new Blob([jsonContent], { type: 'application/json;charset=utf-8;' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.setAttribute('href', url);
+      link.setAttribute('download', `ttc_users_full_backup_${new Date().toISOString().slice(0, 10)}.json`);
+      link.style.visibility = 'hidden';
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+    } catch (err) {
+      alert('เกิดข้อผิดพลาดในการส่งออก JSON');
+    }
+  };
+
+  const handleExportUsersCsv = () => {
+    try {
+      const headers = ['username', 'role', 'name', 'position', 'email'];
+      const rows = users.map(u => [
+        u.username,
+        u.role,
+        `"${(u.name || '').replace(/"/g, '""')}"`,
+        `"${(u.position || '').replace(/"/g, '""')}"`,
+        `"${(u.email || '').replace(/"/g, '""')}"`
+      ]);
+      const csvContent = headers.join(',') + '\n' + rows.map(r => r.join(',')).join('\n');
+      const blob = new Blob(['\ufeff' + csvContent], { type: 'text/csv;charset=utf-8;' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.setAttribute('href', url);
+      link.setAttribute('download', `ttc_users_all_${new Date().toISOString().slice(0, 10)}.csv`);
+      link.style.visibility = 'hidden';
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+    } catch (err) {
+      alert('เกิดข้อผิดพลาดในการส่งออก CSV');
     }
   };
 
@@ -5846,96 +5972,218 @@ export default function App() {
                   }}
                 />
 
-                {userRole === 'ADMIN' && (
-                  <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
-                    <div className="p-6 border-b border-slate-100 flex justify-between items-center">
-                      <div>
-                        <h3 className="font-bold text-lg">จัดการผู้ใช้งาน</h3>
-                        <p className="text-xs text-slate-400">แก้ไขรหัสผ่านและตรวจสอบรายชื่อผู้ใช้ในระบบ</p>
+                {userRole === 'ADMIN' && (() => {
+                  const filteredUsers = users.filter((u) => {
+                    if (!userSearchQuery.trim()) return true;
+                    const q = userSearchQuery.toLowerCase().trim();
+                    return (
+                      (u.username || '').toLowerCase().includes(q) ||
+                      (u.name || '').toLowerCase().includes(q) ||
+                      (u.position || '').toLowerCase().includes(q) ||
+                      (u.role || '').toLowerCase().includes(q) ||
+                      (u.email || '').toLowerCase().includes(q)
+                    );
+                  });
+
+                  return (
+                    <div className="space-y-4">
+                      {/* GitHub & Persistence Information Banner */}
+                      <div className="bg-gradient-to-r from-slate-900 via-indigo-950 to-slate-900 text-white p-5 rounded-2xl border border-indigo-500/30 shadow-lg">
+                        <div className="flex flex-col lg:flex-row items-start lg:items-center justify-between gap-4">
+                          <div className="space-y-1.5 max-w-3xl">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <span className="px-2.5 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 text-xs font-bold border border-emerald-500/40 flex items-center gap-1.5">
+                                <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
+                                ระบบพร้อมเชื่อมต่อ GitHub
+                              </span>
+                              <span className="text-xs text-slate-300 font-medium">
+                                ฐานข้อมูลบุคลากรวิทยาลัย: <strong className="text-amber-300 font-bold">{users.length} บัญชี</strong>
+                              </span>
+                            </div>
+                            <h4 className="text-sm font-bold text-white flex items-center gap-2">
+                              💡 ทำไมนำข้อมูลไปลงใน GitHub จึงไม่มีข้อมูลชื่อผู้ใช้งานทั้งหมด?
+                            </h4>
+                            <p className="text-xs text-slate-300 leading-relaxed">
+                              Git เป็นระบบเก็บซอร์สโค้ด (Source Code) ไม่ใช่ฐานข้อมูลสด โดยปกติฐานข้อมูล SQLite (<code className="text-amber-300 bg-slate-800/80 px-1 py-0.5 rounded font-mono">procurement.db</code>) จะทำงานเฉพาะบนเครื่องนั้นๆ ระบบจึงได้ทำการเชื่อมโยงข้อมูลผู้ใช้ทั้งหมด <strong className="text-white">203 บัญชี</strong> บันทึกลงในไฟล์ <code className="text-amber-300 bg-slate-800/80 px-1.5 py-0.5 rounded font-mono font-bold">src/data/initialUsers.json</code> เพื่อให้ไฟล์นี้ถูกส่งขึ้น GitHub ได้ 100% และทุกครั้งที่มีการเพิ่ม/แก้ไขผู้ใช้ ระบบจะอัปเดตไฟล์นี้ให้อัตโนมัติ
+                            </p>
+                          </div>
+                          <div className="flex flex-wrap items-center gap-2 shrink-0">
+                            <button 
+                              type="button"
+                              onClick={handleSaveUsersToGit}
+                              disabled={isSavingToGit}
+                              className="flex items-center gap-2 px-4 py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold rounded-xl transition-all shadow-md shadow-indigo-950/60 disabled:opacity-50"
+                            >
+                              <Save size={16} />
+                              {isSavingToGit ? 'กำลังบันทึกลงไฟล์...' : 'บันทึกลงไฟล์ Git (Sync to GitHub)'}
+                            </button>
+                            <button 
+                              type="button"
+                              onClick={handleExportUsersJson}
+                              className="flex items-center gap-2 px-3.5 py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-bold rounded-xl transition-all border border-slate-700"
+                            >
+                              <FileDown size={15} />
+                              ส่งออก JSON
+                            </button>
+                            <button 
+                              type="button"
+                              onClick={handleExportUsersCsv}
+                              className="flex items-center gap-2 px-3.5 py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-bold rounded-xl transition-all border border-slate-700"
+                            >
+                              <Download size={15} />
+                              ส่งออก CSV
+                            </button>
+                          </div>
+                        </div>
                       </div>
-                      <div className="flex items-center gap-2">
-                        <button 
-                          onClick={openAddUserModal}
-                          className="flex items-center gap-2 px-4 py-2 bg-red-700 text-white text-xs font-bold rounded-xl hover:bg-red-800 transition-colors"
-                        >
-                          <Plus size={16} />
-                          เพิ่มผู้ใช้งานใหม่
-                        </button>
-                        <button 
-                          onClick={downloadCsvTemplate}
-                          className="flex items-center gap-2 px-4 py-2 bg-slate-100 text-slate-600 text-xs font-bold rounded-xl hover:bg-slate-200 transition-colors border border-slate-200"
-                        >
-                          <Download size={16} />
-                          เทมเพลต CSV
-                        </button>
-                        <label className="cursor-pointer flex items-center gap-2 px-4 py-2 bg-emerald-600 text-white text-xs font-bold rounded-xl hover:bg-emerald-700 transition-colors">
-                          <Upload size={16} />
-                          นำเข้า CSV (.csv)
-                          <input 
-                            type="file" 
-                            accept=".csv" 
-                            className="hidden" 
-                            onChange={handleCsvImport}
-                          />
-                        </label>
-                        <button 
-                          onClick={handleSyncUsers}
-                          className="flex items-center gap-2 px-4 py-2 bg-slate-100 text-slate-600 text-xs font-bold rounded-xl hover:bg-slate-200 transition-colors border border-slate-200"
-                        >
-                          <Settings size={16} />
-                          ซิงค์บัญชีผู้ใช้
-                        </button>
+
+                      {/* Main Users Management Card */}
+                      <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+                        <div className="p-6 border-b border-slate-100 flex flex-col md:flex-row md:items-center justify-between gap-4">
+                          <div>
+                            <div className="flex items-center gap-2">
+                              <h3 className="font-bold text-lg text-slate-800">จัดการผู้ใช้งานและบุคลากร</h3>
+                              <span className="px-2.5 py-0.5 rounded-full bg-slate-100 text-slate-700 text-xs font-bold">
+                                {users.length} รายการ
+                              </span>
+                            </div>
+                            <p className="text-xs text-slate-400">ตรวจสอบ แก้ไขรหัสผ่าน บทบาท และนำเข้า/ส่งออกบัญชีบุคลากร</p>
+                          </div>
+                          <div className="flex flex-wrap items-center gap-2">
+                            <button 
+                              onClick={openAddUserModal}
+                              className="flex items-center gap-2 px-3.5 py-2 bg-red-700 text-white text-xs font-bold rounded-xl hover:bg-red-800 transition-colors shadow-xs"
+                            >
+                              <Plus size={16} />
+                              เพิ่มผู้ใช้งานใหม่
+                            </button>
+                            <button 
+                              onClick={downloadCsvTemplate}
+                              className="flex items-center gap-2 px-3 py-2 bg-slate-100 text-slate-600 text-xs font-bold rounded-xl hover:bg-slate-200 transition-colors border border-slate-200"
+                            >
+                              <Download size={15} />
+                              เทมเพลต CSV
+                            </button>
+                            <label className="cursor-pointer flex items-center gap-2 px-3 py-2 bg-emerald-600 text-white text-xs font-bold rounded-xl hover:bg-emerald-700 transition-colors shadow-xs">
+                              <Upload size={15} />
+                              นำเข้า CSV
+                              <input 
+                                type="file" 
+                                accept=".csv" 
+                                className="hidden" 
+                                onChange={handleCsvImport}
+                              />
+                            </label>
+                            <button 
+                              onClick={handleSyncUsers}
+                              className="flex items-center gap-2 px-3 py-2 bg-blue-50 text-blue-700 text-xs font-bold rounded-xl hover:bg-blue-100 transition-colors border border-blue-200"
+                              title="โหลดข้อมูลบุคลากรทั้งหมด 203 คนจากไฟล์ initialUsers.json กลับเข้าสู่ระบบ"
+                            >
+                              <Settings size={15} />
+                              ซิงค์บัญชี 203 คน
+                            </button>
+                          </div>
+                        </div>
+
+                        {/* Search & Filter Bar */}
+                        <div className="p-4 bg-slate-50/70 border-b border-slate-100 flex flex-wrap items-center justify-between gap-3">
+                          <div className="relative flex-1 min-w-[240px] max-w-md">
+                            <Search size={16} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
+                            <input 
+                              type="text"
+                              value={userSearchQuery}
+                              onChange={(e) => setUserSearchQuery(e.target.value)}
+                              placeholder="ค้นหาชื่อผู้ใช้, ชื่อ-นามสกุล, ตำแหน่ง, บทบาท (STAFF, ADMIN, etc.)..."
+                              className="w-full pl-9 pr-8 py-2 bg-white border border-slate-200 rounded-xl text-xs focus:outline-hidden focus:ring-2 focus:ring-red-500"
+                            />
+                            {userSearchQuery && (
+                              <button 
+                                onClick={() => setUserSearchQuery('')}
+                                className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 text-xs font-bold"
+                              >
+                                ✕
+                              </button>
+                            )}
+                          </div>
+                          <div className="flex items-center gap-2 text-xs text-slate-500">
+                            <span>แสดง <strong>{filteredUsers.length}</strong> จาก <strong>{users.length}</strong> บัญชี</span>
+                          </div>
+                        </div>
+
+                        <div className="overflow-x-auto max-h-[600px] overflow-y-auto">
+                          <table className="w-full text-left">
+                            <thead className="sticky top-0 z-10 bg-slate-100">
+                              <tr className="text-slate-600 text-xs uppercase tracking-wider">
+                                <th className="px-6 py-3.5 font-bold">ชื่อผู้ใช้ (Username)</th>
+                                <th className="px-6 py-3.5 font-bold">ชื่อ-นามสกุล</th>
+                                <th className="px-6 py-3.5 font-bold">ตำแหน่ง</th>
+                                <th className="px-6 py-3.5 font-bold">บทบาท (Role)</th>
+                                <th className="px-6 py-3.5 font-bold">อีเมล</th>
+                                <th className="px-6 py-3.5 font-bold text-right">การจัดการ</th>
+                              </tr>
+                            </thead>
+                            <tbody className="divide-y divide-slate-100">
+                              {filteredUsers.length === 0 ? (
+                                <tr>
+                                  <td colSpan={6} className="px-6 py-12 text-center text-slate-400 text-sm">
+                                    ไม่พบรายชื่อผู้ใช้งานที่ตรงกับ "{userSearchQuery}"
+                                  </td>
+                                </tr>
+                              ) : (
+                                filteredUsers.map((user) => (
+                                  <tr key={user.username} className="hover:bg-slate-50/80 transition-colors">
+                                    <td className="px-6 py-3.5 font-mono text-xs font-bold text-slate-700">
+                                      {user.username}
+                                    </td>
+                                    <td className="px-6 py-3.5 text-sm font-semibold text-slate-800">
+                                      {user.name}
+                                    </td>
+                                    <td className="px-6 py-3.5 text-xs text-slate-600">
+                                      {user.position}
+                                    </td>
+                                    <td className="px-6 py-3.5">
+                                      <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase ${
+                                        user.role === 'ADMIN' ? 'bg-red-600 text-white' :
+                                        user.role.includes('HEAD') ? 'bg-amber-100 text-amber-800' :
+                                        user.role.includes('DIRECTOR') ? 'bg-purple-100 text-purple-800' :
+                                        'bg-slate-100 text-slate-700'
+                                      }`}>
+                                        {user.role}
+                                      </span>
+                                    </td>
+                                    <td className="px-6 py-3.5 text-xs text-slate-500 font-mono">
+                                      {user.email || '-'}
+                                    </td>
+                                    <td className="px-6 py-3.5 text-right">
+                                      <div className="flex items-center justify-end gap-2.5">
+                                        <button 
+                                          onClick={() => openEditUserModal(user)}
+                                          className="text-xs font-bold text-blue-600 hover:text-blue-800 hover:underline flex items-center gap-1"
+                                        >
+                                          <Settings size={12} />
+                                          แก้ไข
+                                        </button>
+                                        {user.username !== 'admin' && (
+                                          <button 
+                                            onClick={() => handleDeleteUser(user.username)}
+                                            className="text-xs font-bold text-red-600 hover:text-red-800 hover:underline flex items-center gap-1"
+                                          >
+                                            <Plus size={12} className="rotate-45" />
+                                            ลบ
+                                          </button>
+                                        )}
+                                      </div>
+                                    </td>
+                                  </tr>
+                                ))
+                              )}
+                            </tbody>
+                          </table>
+                        </div>
                       </div>
                     </div>
-                    <div className="overflow-x-auto">
-                      <table className="w-full text-left">
-                        <thead>
-                          <tr className="bg-slate-50 text-slate-500 text-xs uppercase tracking-wider">
-                            <th className="px-6 py-4 font-semibold">ชื่อผู้ใช้</th>
-                            <th className="px-6 py-4 font-semibold">ชื่อ-นามสกุล</th>
-                            <th className="px-6 py-4 font-semibold">ตำแหน่ง</th>
-                            <th className="px-6 py-4 font-semibold">บทบาท</th>
-                            <th className="px-6 py-4 font-semibold">การจัดการ</th>
-                          </tr>
-                        </thead>
-                        <tbody className="divide-y divide-slate-100">
-                          {users.map((user) => (
-                            <tr key={user.username} className="hover:bg-slate-50 transition-colors">
-                              <td className="px-6 py-4 font-mono text-sm">{user.username}</td>
-                              <td className="px-6 py-4 text-sm font-bold">{user.name}</td>
-                              <td className="px-6 py-4 text-sm text-slate-600">{user.position}</td>
-                              <td className="px-6 py-4">
-                                <span className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase ${
-                                  user.role === 'ADMIN' ? 'bg-red-600 text-white' : 'bg-slate-100 text-slate-600'
-                                }`}>
-                                  {user.role}
-                                </span>
-                              </td>
-                              <td className="px-6 py-4">
-                                <div className="flex items-center gap-3">
-                                  <button 
-                                    onClick={() => openEditUserModal(user)}
-                                    className="text-xs font-bold text-blue-600 hover:underline flex items-center gap-1"
-                                  >
-                                    <Settings size={12} />
-                                    แก้ไข
-                                  </button>
-                                  <button 
-                                    onClick={() => handleDeleteUser(user.username)}
-                                    className="text-xs font-bold text-red-600 hover:underline flex items-center gap-1"
-                                  >
-                                    <Plus size={12} className="rotate-45" />
-                                    ลบ
-                                  </button>
-                                </div>
-                              </td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  </div>
-                )}
+                  );
+                })()}
 
                 <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
                   <div className="p-6 border-b border-slate-100 flex justify-between items-center">

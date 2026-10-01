@@ -295,7 +295,75 @@ if (fiscalYearCount.count === 0) {
   insertFY.run('2569', 'ปีงบประมาณ พ.ศ. 2569', 0, 'upcoming', 'ปีงบประมาณล่วงหน้า เตรียมการจัดทำคำของบประมาณ', '2568-10-01', '2569-09-30');
 }
 
-// Seed initial users
+// Migration: Add email column to users
+try { db.exec("ALTER TABLE users ADD COLUMN email TEXT"); } catch (e) {}
+
+// Persistent User File Path Helper (ensures compatibility across tsx, node, git, and production)
+function getInitialUsersFilePath(): string {
+  const p1 = path.join(__dirname, 'src', 'data', 'initialUsers.json');
+  if (fs.existsSync(p1)) return p1;
+  const p2 = path.resolve(process.cwd(), 'src', 'data', 'initialUsers.json');
+  if (fs.existsSync(p2)) return p2;
+  const p3 = path.resolve(process.cwd(), 'initialUsers.json');
+  if (fs.existsSync(p3)) return p3;
+  return p1;
+}
+
+// Persist all SQLite users back to JSON file so changes are committed to GitHub
+function persistUsersToJson(): void {
+  try {
+    const targetPath = getInitialUsersFilePath();
+    const dir = path.dirname(targetPath);
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
+    }
+    const allUsers = db.prepare(`
+      SELECT username, password, role, name, position, email 
+      FROM users 
+      ORDER BY 
+        CASE 
+          WHEN role = 'ADMIN' THEN 1
+          WHEN role LIKE '%HEAD%' THEN 2
+          WHEN role LIKE '%DIRECTOR%' THEN 3
+          ELSE 4
+        END,
+        username ASC
+    `).all();
+    fs.writeFileSync(targetPath, JSON.stringify(allUsers, null, 2), 'utf-8');
+    console.log(`[Users Sync] Saved ${allUsers.length} users to ${targetPath}`);
+  } catch (err) {
+    console.error("Failed to persist users to JSON:", err);
+  }
+}
+
+// Seed initial users from persistent JSON file
+try {
+  const initialUsersPath = getInitialUsersFilePath();
+  if (fs.existsSync(initialUsersPath)) {
+    const initialUsers = JSON.parse(fs.readFileSync(initialUsersPath, 'utf-8'));
+    const insertAllStmt = db.prepare(`
+      INSERT OR IGNORE INTO users (username, password, role, name, position, email)
+      VALUES (@username, @password, @role, @name, @position, @email)
+    `);
+    const seedTransaction = db.transaction((usersList) => {
+      for (const u of usersList) {
+        insertAllStmt.run({
+          username: u.username,
+          password: u.password || 'password',
+          role: u.role || 'STAFF',
+          name: u.name || u.username,
+          position: u.position || 'บุคลากร',
+          email: u.email || null
+        });
+      }
+    });
+    seedTransaction(initialUsers);
+  }
+} catch (e) {
+  console.error("Error seeding initialUsers.json:", e);
+}
+
+// Fallback core users
 const insertUser = db.prepare("INSERT OR IGNORE INTO users (username, password, role, name, position) VALUES (?, ?, ?, ?, ?)");
 insertUser.run('admin', 'admin123', 'ADMIN', 'ผู้ดูแลระบบ', 'ผู้ดูแลระบบ');
 insertUser.run('plan_staff', 'password', 'PLANNING_STAFF', 'เจ้าหน้าที่งานวางแผน', 'เจ้าหน้าที่งานพัฒนายุทธศาสตร์ แผนงานและงบประมาณ');
@@ -310,14 +378,15 @@ insertUser.run('director', 'password', 'DIRECTOR', 'นายกษิดิฏ�
 insertUser.run('staff', 'password', 'STAFF', 'บุคลากร', 'บุคลากร');
 insertUser.run('guest', 'password', 'GUEST', 'ผู้เข้าชมทั่วไป', 'ผู้เข้าชมทั่วไป');
 
-// Migration: Add email column to users
-try { db.exec("ALTER TABLE users ADD COLUMN email TEXT"); } catch (e) {}
 try {
   db.exec(`
     UPDATE users SET email = 'nanthawudnoi@gmail.com', name = 'นายนันธวุฒิ น้อย' WHERE username = 'deputy_res';
     UPDATE users SET email = 'admin@ttc.ac.th' WHERE username = 'admin';
   `);
 } catch (e) {}
+
+// Ensure JSON file contains all synced users
+persistUsersToJson();
 
 // Migration: Add columns if they don't exist
 try { db.exec("ALTER TABLE projects ADD COLUMN project_code TEXT"); } catch (e) {}
@@ -1077,7 +1146,32 @@ async function startServer() {
 
   app.get("/api/users", (req, res) => {
     try {
-      const users = db.prepare("SELECT username, role, name, position FROM users").all();
+      let users = db.prepare("SELECT username, role, name, position, email, created_at FROM users ORDER BY username ASC").all();
+      // Auto-reseed if table is empty
+      if (!users || users.length === 0) {
+        const seedPath = getInitialUsersFilePath();
+        if (fs.existsSync(seedPath)) {
+          const list = JSON.parse(fs.readFileSync(seedPath, 'utf-8'));
+          const insertStmt = db.prepare(`
+            INSERT OR IGNORE INTO users (username, password, role, name, position, email)
+            VALUES (@username, @password, @role, @name, @position, @email)
+          `);
+          const tx = db.transaction((arr) => {
+            for (const item of arr) {
+              insertStmt.run({
+                username: item.username,
+                password: item.password || 'password',
+                role: item.role || 'STAFF',
+                name: item.name || item.username,
+                position: item.position || 'บุคลากร',
+                email: item.email || null
+              });
+            }
+          });
+          tx(list);
+          users = db.prepare("SELECT username, role, name, position, email, created_at FROM users ORDER BY username ASC").all();
+        }
+      }
       res.json(users);
     } catch (err) {
       console.error("Error fetching users:", err);
@@ -1085,10 +1179,51 @@ async function startServer() {
     }
   });
 
+  app.get("/api/users/export-json", (req, res) => {
+    try {
+      const users = db.prepare(`
+        SELECT username, password, role, name, position, email 
+        FROM users 
+        ORDER BY 
+          CASE 
+            WHEN role = 'ADMIN' THEN 1
+            WHEN role LIKE '%HEAD%' THEN 2
+            WHEN role LIKE '%DIRECTOR%' THEN 3
+            ELSE 4
+          END,
+          username ASC
+      `).all();
+      res.setHeader('Content-Type', 'application/json');
+      res.setHeader('Content-Disposition', 'attachment; filename="ttc_users_full_backup.json"');
+      res.send(JSON.stringify(users, null, 2));
+    } catch (err) {
+      console.error("Error exporting users:", err);
+      res.status(500).json({ error: "Failed to export users" });
+    }
+  });
+
+  app.post("/api/users/save-to-git", (req, res) => {
+    try {
+      persistUsersToJson();
+      const count = db.prepare("SELECT count(*) as c FROM users").get() as { c: number };
+      const targetPath = getInitialUsersFilePath();
+      res.json({
+        success: true,
+        count: count.c,
+        targetPath,
+        message: `บันทึกข้อมูลผู้ใช้ทั้งหมด ${count.c} รายการลงในไฟล์ ${targetPath} เรียบร้อยแล้ว ข้อมูลจะคงอยู่และพร้อมส่งขึ้น GitHub ทันที`
+      });
+    } catch (err: any) {
+      console.error("Error saving users to git JSON:", err);
+      res.status(500).json({ error: "Failed to save users to git JSON: " + err.message });
+    }
+  });
+
   app.patch("/api/users/:username/password", (req, res) => {
     const { password } = req.body;
     try {
       db.prepare("UPDATE users SET password = ? WHERE username = ?").run(password, req.params.username);
+      persistUsersToJson();
       res.json({ success: true });
     } catch (err) {
       res.status(500).json({ error: "Failed to update password" });
@@ -1096,30 +1231,32 @@ async function startServer() {
   });
 
   app.post("/api/users", (req, res) => {
-    const { username, password, role, name, position } = req.body;
+    const { username, password, role, name, position, email } = req.body;
     try {
-      db.prepare("INSERT INTO users (username, password, role, name, position) VALUES (?, ?, ?, ?, ?)")
-        .run(username, password, role, name, position);
+      db.prepare("INSERT INTO users (username, password, role, name, position, email) VALUES (?, ?, ?, ?, ?, ?)")
+        .run(username, password || 'password', role, name, position, email || null);
+      persistUsersToJson();
       res.json({ success: true });
     } catch (err: any) {
       if (err.code === 'SQLITE_CONSTRAINT') {
-        res.status(400).json({ error: "Username already exists" });
+        res.status(400).json({ error: "ชื่อผู้ใช้นี้มีในระบบแล้ว" });
       } else {
-        res.status(500).json({ error: "Failed to create user" });
+        res.status(500).json({ error: "ไม่สามารถเพิ่มผู้ใช้งานได้" });
       }
     }
   });
 
   app.patch("/api/users/:username", (req, res) => {
-    const { role, name, position, password } = req.body;
+    const { role, name, position, password, email } = req.body;
     try {
       if (password) {
-        db.prepare("UPDATE users SET role = ?, name = ?, position = ?, password = ? WHERE username = ?")
-          .run(role, name, position, password, req.params.username);
+        db.prepare("UPDATE users SET role = ?, name = ?, position = ?, password = ?, email = ? WHERE username = ?")
+          .run(role, name, position, password, email || null, req.params.username);
       } else {
-        db.prepare("UPDATE users SET role = ?, name = ?, position = ? WHERE username = ?")
-          .run(role, name, position, req.params.username);
+        db.prepare("UPDATE users SET role = ?, name = ?, position = ?, email = ? WHERE username = ?")
+          .run(role, name, position, email || null, req.params.username);
       }
+      persistUsersToJson();
       res.json({ success: true });
     } catch (err) {
       res.status(500).json({ error: "Failed to update user" });
@@ -1129,6 +1266,7 @@ async function startServer() {
   app.delete("/api/users/:username", (req, res) => {
     try {
       db.prepare("DELETE FROM users WHERE username = ?").run(req.params.username);
+      persistUsersToJson();
       res.json({ success: true });
     } catch (err) {
       res.status(500).json({ error: "Failed to delete user" });
@@ -1378,22 +1516,75 @@ async function startServer() {
 
   app.post("/api/users/sync", (req, res) => {
     try {
-      const insertUser = db.prepare("INSERT OR IGNORE INTO users (username, password, role, name, position) VALUES (?, ?, ?, ?, ?)");
-      insertUser.run('admin', 'admin123', 'ADMIN', 'ผู้ดูแลระบบ', 'ผู้ดูแลระบบ');
-      insertUser.run('plan_staff', 'password', 'PLANNING_STAFF', 'เจ้าหน้าที่งานวางแผน', 'เจ้าหน้าที่งานพัฒนายุทธศาสตร์ แผนงานและงบประมาณ');
-      insertUser.run('plan_head', 'password', 'PLANNING_HEAD', 'หัวหน้างานวางแผน', 'หัวหน้างานพัฒนายุทธศาสตร์ แผนงานและงบประมาณ');
-      insertUser.run('proc_staff', 'password', 'PROCUREMENT_STAFF', 'เจ้าหน้าที่งานพัสดุ', 'เจ้าหน้าที่งานพัสดุ');
-      insertUser.run('proc_head', 'password', 'PROCUREMENT_HEAD', 'หัวหน้างานพัสดุ', 'หัวหน้างานพัสดุ');
-      insertUser.run('fin_staff', 'password', 'FINANCE_STAFF', 'เจ้าหน้าที่งานการเงิน', 'เจ้าหน้าที่งานการเงิน');
-      insertUser.run('fin_head', 'password', 'FINANCE_HEAD', 'หัวหน้างานการเงิน', 'หัวหน้างานการเงิน');
-      insertUser.run('deputy_plan', 'password', 'DEPUTY_DIRECTOR_PLANNING', 'รองผู้อำนวยการฝ่ายยุทธศาสตร์และแผนงาน', 'รองผู้อำนวยการฝ่ายยุทธศาสตร์และแผนงาน');
-      insertUser.run('deputy_res', 'password', 'DEPUTY_DIRECTOR_RESOURCES', 'รองผู้อำนวยการฝ่ายบริหารทรัพยากร', 'รองผู้อำนวยการฝ่ายบริหารทรัพยากร');
-      insertUser.run('director', 'password', 'DIRECTOR', 'ผู้อำนวยการ', 'ผู้อำนวยการวิทยาลัย');
-      insertUser.run('staff', 'password', 'STAFF', 'บุคลากร', 'บุคลากร');
-      insertUser.run('guest', 'password', 'GUEST', 'ผู้เข้าชมทั่วไป', 'ผู้เข้าชมทั่วไป');
-      res.json({ success: true, message: "User accounts synchronized successfully" });
-    } catch (err) {
-      res.status(500).json({ error: "Failed to sync users" });
+      let syncedCount = 0;
+      const initialPath = getInitialUsersFilePath();
+      let seedList: any[] = [];
+      if (fs.existsSync(initialPath)) {
+        try {
+          seedList = JSON.parse(fs.readFileSync(initialPath, 'utf-8'));
+        } catch (e) {
+          console.error("Failed to read seed file in /api/users/sync:", e);
+        }
+      }
+
+      const insertOrUpdateUser = db.prepare(`
+        INSERT INTO users (username, password, role, name, position, email)
+        VALUES (@username, @password, @role, @name, @position, @email)
+        ON CONFLICT(username) DO UPDATE SET
+          name = excluded.name,
+          position = excluded.position,
+          role = excluded.role,
+          email = COALESCE(excluded.email, users.email)
+      `);
+
+      const syncTx = db.transaction((list: any[]) => {
+        for (const u of list) {
+          if (!u.username) continue;
+          insertOrUpdateUser.run({
+            username: u.username,
+            password: u.password || 'password',
+            role: u.role || 'STAFF',
+            name: u.name || u.username,
+            position: u.position || 'บุคลากร',
+            email: u.email || null
+          });
+          syncedCount++;
+        }
+      });
+
+      if (Array.isArray(seedList) && seedList.length > 0) {
+        syncTx(seedList);
+      }
+
+      // Also ensure standard default core accounts
+      const standardAccounts = [
+        { username: 'admin', password: 'admin123', role: 'ADMIN', name: 'ผู้ดูแลระบบ', position: 'ผู้ดูแลระบบ', email: 'admin@ttc.ac.th' },
+        { username: 'plan_staff', password: 'password', role: 'PLANNING_STAFF', name: 'เจ้าหน้าที่งานวางแผน', position: 'เจ้าหน้าที่งานพัฒนายุทธศาสตร์ แผนงานและงบประมาณ', email: null },
+        { username: 'plan_head', password: 'password', role: 'PLANNING_HEAD', name: 'หัวหน้างานวางแผน', position: 'หัวหน้างานพัฒนายุทธศาสตร์ แผนงานและงบประมาณ', email: null },
+        { username: 'proc_staff', password: 'password', role: 'PROCUREMENT_STAFF', name: 'เจ้าหน้าที่งานพัสดุ', position: 'เจ้าหน้าที่งานพัสดุ', email: null },
+        { username: 'proc_head', password: 'password', role: 'PROCUREMENT_HEAD', name: 'หัวหน้างานพัสดุ', position: 'หัวหน้างานพัสดุ', email: null },
+        { username: 'fin_staff', password: 'password', role: 'FINANCE_STAFF', name: 'เจ้าหน้าที่งานการเงิน', position: 'เจ้าหน้าที่งานการเงิน', email: null },
+        { username: 'fin_head', password: 'password', role: 'FINANCE_HEAD', name: 'หัวหน้างานการเงิน', position: 'หัวหน้างานการเงิน', email: null },
+        { username: 'deputy_plan', password: 'password', role: 'DEPUTY_DIRECTOR_PLANNING', name: 'รองผู้อำนวยการฝ่ายยุทธศาสตร์และแผนงาน', position: 'รองผู้อำนวยการฝ่ายยุทธศาสตร์และแผนงาน', email: null },
+        { username: 'deputy_res', password: 'password', role: 'DEPUTY_DIRECTOR_RESOURCES', name: 'นายนันธวุฒิ น้อย', position: 'รองผู้อำนวยการฝ่ายบริหารทรัพยากร', email: 'nanthawudnoi@gmail.com' },
+        { username: 'director', password: 'password', role: 'DIRECTOR', name: 'นายกษิดิฏฐ์ คำศรี', position: 'ผู้อำนวยการวิทยาลัย', email: null },
+        { username: 'staff', password: 'password', role: 'STAFF', name: 'บุคลากร', position: 'บุคลากร', email: null },
+        { username: 'guest', password: 'password', role: 'GUEST', name: 'ผู้เข้าชมทั่วไป', position: 'ผู้เข้าชมทั่วไป', email: null }
+      ];
+      syncTx(standardAccounts);
+
+      // Persist full sync result back to JSON file so git has complete users
+      persistUsersToJson();
+
+      const totalCount = db.prepare("SELECT count(*) as c FROM users").get() as { c: number };
+      res.json({ 
+        success: true, 
+        message: `ซิงค์บัญชีผู้ใช้งานสำเร็จ รวมทั้งสิ้น ${totalCount.c} รายการ (บันทึกอัปเดตไฟล์ src/data/initialUsers.json สำหรับส่งขึ้น GitHub เรียบร้อยแล้ว)`,
+        count: totalCount.c
+      });
+    } catch (err: any) {
+      console.error("Failed to sync users:", err);
+      res.status(500).json({ error: "Failed to sync users: " + err.message });
     }
   });
 
@@ -1405,7 +1596,7 @@ async function startServer() {
 
     try {
       const checkUser = db.prepare("SELECT username FROM users WHERE username = ?");
-      const insertUser = db.prepare("INSERT INTO users (username, password, role, name, position) VALUES (?, ?, ?, ?, ?)");
+      const insertUser = db.prepare("INSERT INTO users (username, password, role, name, position, email) VALUES (?, ?, ?, ?, ?, ?)");
       
       const transaction = db.transaction((users) => {
         let added = 0;
@@ -1430,7 +1621,8 @@ async function startServer() {
             String(u.password || '123456').trim(), 
             role.trim().toUpperCase(), 
             String(u.name || u.username).trim(), 
-            String(u.position || 'บุคลากร').trim()
+            String(u.position || 'บุคลากร').trim(),
+            u.email || null
           );
           added++;
         }
@@ -1438,9 +1630,10 @@ async function startServer() {
       });
 
       const stats = transaction(bulkUsers);
+      persistUsersToJson();
       res.json({ 
         success: true, 
-        message: `นำเข้าข้อมูลเสร็จสิ้น: เพิ่มใหม่ ${stats.added} รายการ, ข้าม ${stats.skipped} รายการ (มีในระบบแล้ว), รวมทั้งสิ้น ${stats.total} รายการ`,
+        message: `นำเข้าข้อมูลเสร็จสิ้น: เพิ่มใหม่ ${stats.added} รายการ, ข้าม ${stats.skipped} รายการ (มีในระบบแล้ว), รวมทั้งสิ้น ${stats.total} รายการ (บันทึกอัปเดตไฟล์ src/data/initialUsers.json เรียบร้อยแล้ว)`,
         stats
       });
     } catch (err) {
