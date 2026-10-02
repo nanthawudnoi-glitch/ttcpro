@@ -73,12 +73,24 @@ db.exec(`
 
   CREATE TABLE IF NOT EXISTS budget_sources (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    name TEXT NOT NULL UNIQUE
+    name TEXT NOT NULL,
+    code TEXT,
+    fiscal_year TEXT DEFAULT '2568',
+    total_budget REAL DEFAULT 0,
+    category TEXT,
+    description TEXT,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
   );
 
   CREATE TABLE IF NOT EXISTS expense_categories (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    name TEXT NOT NULL UNIQUE
+    name TEXT NOT NULL,
+    code TEXT,
+    fiscal_year TEXT DEFAULT '2568',
+    allocated_budget REAL DEFAULT 0,
+    description TEXT,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_by TEXT
   );
 
   CREATE TABLE IF NOT EXISTS project_items (
@@ -154,6 +166,63 @@ db.exec(`
     FOREIGN KEY(category_id) REFERENCES expense_categories(id) ON DELETE CASCADE
   );
 `);
+
+// Migration: Remove legacy UNIQUE(name) constraint on budget_sources and expense_categories
+try {
+  const bsTable = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name = 'budget_sources'").get() as any;
+  if (bsTable && bsTable.sql && bsTable.sql.includes('name TEXT NOT NULL UNIQUE')) {
+    db.pragma('foreign_keys = OFF');
+    db.transaction(() => {
+      db.exec(`
+        CREATE TABLE budget_sources_temp (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          name TEXT NOT NULL,
+          code TEXT,
+          fiscal_year TEXT DEFAULT '2568',
+          total_budget REAL DEFAULT 0,
+          category TEXT,
+          description TEXT,
+          updated_at DATETIME
+        );
+        INSERT INTO budget_sources_temp (id, name, code, fiscal_year, total_budget, category, description, updated_at)
+        SELECT id, name, code, fiscal_year, total_budget, category, description, updated_at FROM budget_sources;
+        DROP TABLE budget_sources;
+        ALTER TABLE budget_sources_temp RENAME TO budget_sources;
+      `);
+    })();
+    db.pragma('foreign_keys = ON');
+  }
+} catch (e) {
+  console.warn("budget_sources migration notice:", e);
+}
+
+try {
+  const ecTable = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name = 'expense_categories'").get() as any;
+  if (ecTable && ecTable.sql && ecTable.sql.includes('name TEXT NOT NULL UNIQUE')) {
+    db.pragma('foreign_keys = OFF');
+    db.transaction(() => {
+      db.exec(`
+        CREATE TABLE expense_categories_temp (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          name TEXT NOT NULL,
+          code TEXT,
+          fiscal_year TEXT DEFAULT '2568',
+          allocated_budget REAL DEFAULT 0,
+          description TEXT,
+          updated_at DATETIME,
+          updated_by TEXT
+        );
+        INSERT INTO expense_categories_temp (id, name, code, fiscal_year, allocated_budget, description, updated_at, updated_by)
+        SELECT id, name, code, fiscal_year, allocated_budget, description, updated_at, updated_by FROM expense_categories;
+        DROP TABLE expense_categories;
+        ALTER TABLE expense_categories_temp RENAME TO expense_categories;
+      `);
+    })();
+    db.pragma('foreign_keys = ON');
+  }
+} catch (e) {
+  console.warn("expense_categories migration notice:", e);
+}
 
 // Migration: Add missing columns if they don't exist
 const tableInfo = db.prepare("PRAGMA table_info(projects)").all() as any[];
@@ -2095,15 +2164,62 @@ async function startServer() {
     if (!name || !name.trim()) {
       return res.status(400).json({ error: "กรุณาระบุชื่อแหล่งงบประมาณ" });
     }
+    const fy = fiscal_year ? String(fiscal_year).trim() : '2568';
+    const parsedBudget = Number(total_budget) || 0;
+    const cleanName = name.trim();
+
     try {
-      const parsedBudget = Number(total_budget) || 0;
+      // Check if a budget source with this name already exists in this fiscal year
+      const existing = db.prepare("SELECT * FROM budget_sources WHERE LOWER(name) = LOWER(?) AND fiscal_year = ?").get(cleanName, fy) as any;
+
+      if (existing) {
+        // If it exists and budget > 0, record as a new allocation installment from the government
+        if (parsedBudget > 0) {
+          const maxInst = db.prepare("SELECT COALESCE(MAX(installment_no), 0) as max_no FROM budget_source_allocations WHERE budget_source_id = ?").get(existing.id) as any;
+          const nextNo = (maxInst?.max_no || 0) + 1;
+          const allocTitle = `จัดสรรครั้งที่ ${nextNo} (ตามที่รัฐบาลจัดสรรมา)`;
+          const today = new Date().toISOString().split('T')[0];
+
+          db.prepare(`
+            INSERT INTO budget_source_allocations (budget_source_id, installment_no, title, amount, allocation_date, doc_ref, notes)
+            VALUES (?, ?, ?, ?, ?, ?, 'จัดสรรงบประมาณเพิ่มเติมตามที่รัฐบาลจัดสรรมา')
+          `).run(existing.id, nextNo, allocTitle, parsedBudget, today, `หนังสือจัดสรรงวดที่ ${nextNo}`);
+
+          // Recalculate total_budget
+          const sumRes = db.prepare("SELECT SUM(amount) as total FROM budget_source_allocations WHERE budget_source_id = ?").get(existing.id) as any;
+          const newTotal = sumRes?.total || ((existing.total_budget || 0) + parsedBudget);
+          db.prepare("UPDATE budget_sources SET total_budget = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(newTotal, existing.id);
+
+          return res.json({
+            id: existing.id,
+            success: true,
+            isNewInstallment: true,
+            installment_no: nextNo,
+            total_budget: newTotal,
+            message: `เพิ่มวงเงินจัดสรรงวดที่ ${nextNo} ให้แก่แหล่งงบประมาณ "${cleanName}" จำนวน ฿${parsedBudget.toLocaleString()} บาท เรียบร้อยแล้ว (วงเงินรวมสะสม ฿${newTotal.toLocaleString()} บาท)`
+          });
+        } else {
+          // If 0 budget was entered, update description/code if provided
+          if (description || code) {
+            db.prepare("UPDATE budget_sources SET description = COALESCE(?, description), code = COALESCE(?, code), updated_at = CURRENT_TIMESTAMP WHERE id = ?")
+              .run(description ? description.trim() : null, code ? code.trim() : null, existing.id);
+          }
+          return res.json({
+            id: existing.id,
+            success: true,
+            message: `แหล่งงบประมาณ "${cleanName}" (ปีงบประมาณ ${fy}) มีอยู่ในระบบแล้ว`
+          });
+        }
+      }
+
+      // If does not exist in this fiscal year, insert new budget source
       const info = db.prepare(`
         INSERT INTO budget_sources (name, code, fiscal_year, total_budget, category, description)
         VALUES (?, ?, ?, ?, ?, ?)
       `).run(
-        name.trim(),
+        cleanName,
         code ? code.trim() : null,
-        fiscal_year ? String(fiscal_year).trim() : '2568',
+        fy,
         parsedBudget,
         category ? category.trim() : null,
         description ? description.trim() : null
@@ -2113,18 +2229,18 @@ async function startServer() {
       if (parsedBudget > 0) {
         db.prepare(`
           INSERT INTO budget_source_allocations (budget_source_id, installment_no, title, amount, allocation_date, doc_ref, notes)
-          VALUES (?, 1, 'จัดสรรครั้งที่ 1 (ตั้งต้น)', ?, ?, 'หนังสือจัดสรรเริ่มต้น', 'วงเงินจัดสรรเริ่มต้น')
+          VALUES (?, 1, 'จัดสรรครั้งที่ 1 (ตั้งต้น)', ?, ?, 'หนังสือจัดสรรเริ่มต้น', 'วงเงินจัดสรรเริ่มต้นตามที่รัฐบาลจัดสรรมา')
         `).run(newId, parsedBudget, new Date().toISOString().split('T')[0]);
       }
 
-      res.json({ id: newId, success: true });
+      res.json({
+        id: newId,
+        success: true,
+        message: `เพิ่มแหล่งงบประมาณ "${cleanName}" ประจำปีงบประมาณ ${fy} วงเงิน ฿${parsedBudget.toLocaleString()} บาท เรียบร้อยแล้ว`
+      });
     } catch (err: any) {
       console.error("Failed to add budget source:", err);
-      if (err.code === 'SQLITE_CONSTRAINT') {
-        res.status(400).json({ error: "ชื่อแหล่งงบประมาณนี้มีอยู่ในระบบแล้ว" });
-      } else {
-        res.status(500).json({ error: "Failed to add budget source" });
-      }
+      res.status(500).json({ error: "เกิดข้อผิดพลาดในการบันทึกแหล่งงบประมาณ: " + (err.message || '') });
     }
   });
 
@@ -2521,15 +2637,78 @@ async function startServer() {
     if (!name || !name.trim()) {
       return res.status(400).json({ error: "กรุณาระบุชื่อหมวดค่าใช้จ่าย" });
     }
+    const fy = fiscal_year ? String(fiscal_year).trim() : '2568';
+    const parsedAllocated = Number(allocated_budget) || 0;
+    const cleanName = name.trim();
+
     try {
-      const parsedAllocated = Number(allocated_budget) || 0;
+      // Check if an expense category with this name already exists in this fiscal year
+      const existing = db.prepare("SELECT * FROM expense_categories WHERE LOWER(name) = LOWER(?) AND fiscal_year = ?").get(cleanName, fy) as any;
+
+      if (existing) {
+        // If it exists and budget > 0, record as a new allocation installment from the government
+        if (parsedAllocated > 0) {
+          const maxInst = db.prepare("SELECT COALESCE(MAX(installment_no), 0) as max_no FROM expense_category_allocations WHERE category_id = ?").get(existing.id) as any;
+          const nextNo = (maxInst?.max_no || 0) + 1;
+          const allocTitle = `จัดสรรครั้งที่ ${nextNo} (ตามที่รัฐบาลจัดสรรมา)`;
+          const today = new Date().toISOString().split('T')[0];
+
+          db.prepare(`
+            INSERT INTO expense_category_allocations (category_id, installment_no, title, amount, allocation_date, doc_ref, notes, created_by)
+            VALUES (?, ?, ?, ?, ?, ?, 'จัดสรรงบประมาณเพิ่มเติมตามที่รัฐบาลจัดสรรมา', ?)
+          `).run(
+            existing.id,
+            nextNo,
+            allocTitle,
+            parsedAllocated,
+            today,
+            `หนังสือจัดสรรงวดที่ ${nextNo}`,
+            updated_by || 'งานพัฒนายุทธศาสตร์ แผนงานและงบประมาณ'
+          );
+
+          // Recalculate allocated_budget
+          const sumRes = db.prepare("SELECT SUM(amount) as total FROM expense_category_allocations WHERE category_id = ?").get(existing.id) as any;
+          const newTotal = sumRes?.total || ((existing.allocated_budget || 0) + parsedAllocated);
+          db.prepare("UPDATE expense_categories SET allocated_budget = ?, updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE id = ?").run(
+            newTotal,
+            updated_by || 'งานพัฒนายุทธศาสตร์ แผนงานและงบประมาณ',
+            existing.id
+          );
+
+          return res.json({
+            id: existing.id,
+            name: cleanName,
+            fiscal_year: fy,
+            success: true,
+            isNewInstallment: true,
+            installment_no: nextNo,
+            allocated_budget: newTotal,
+            message: `เพิ่มวงเงินจัดสรรงวดที่ ${nextNo} ให้แก่หมวดค่าใช้จ่าย "${cleanName}" จำนวน ฿${parsedAllocated.toLocaleString()} บาท เรียบร้อยแล้ว (วงเงินรวมสะสม ฿${newTotal.toLocaleString()} บาท)`
+          });
+        } else {
+          // If 0 budget was entered, update description/code if provided
+          if (description || code) {
+            db.prepare("UPDATE expense_categories SET description = COALESCE(?, description), code = COALESCE(?, code), updated_at = CURRENT_TIMESTAMP WHERE id = ?")
+              .run(description ? description.trim() : null, code ? code.trim() : null, existing.id);
+          }
+          return res.json({
+            id: existing.id,
+            name: cleanName,
+            fiscal_year: fy,
+            success: true,
+            message: `หมวดค่าใช้จ่าย "${cleanName}" (ปีงบประมาณ ${fy}) มีอยู่ในระบบแล้ว`
+          });
+        }
+      }
+
+      // If does not exist in this fiscal year, insert new expense category
       const info = db.prepare(`
         INSERT INTO expense_categories (name, code, fiscal_year, allocated_budget, description, updated_at, updated_by)
         VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?)
       `).run(
-        name.trim(),
+        cleanName,
         code ? code.trim() : null,
-        fiscal_year ? String(fiscal_year).trim() : '2568',
+        fy,
         parsedAllocated,
         description ? description.trim() : null,
         updated_by || 'งานพัฒนายุทธศาสตร์ แผนงานและงบประมาณ'
@@ -2539,7 +2718,7 @@ async function startServer() {
       if (parsedAllocated > 0) {
         db.prepare(`
           INSERT INTO expense_category_allocations (category_id, installment_no, title, amount, allocation_date, doc_ref, notes, created_by)
-          VALUES (?, 1, 'จัดสรรครั้งที่ 1 (ตั้งต้น)', ?, ?, 'หนังสือจัดสรรเริ่มต้น', 'วงเงินจัดสรรเริ่มต้น', ?)
+          VALUES (?, 1, 'จัดสรรครั้งที่ 1 (ตั้งต้น)', ?, ?, 'หนังสือจัดสรรเริ่มต้น', 'วงเงินจัดสรรเริ่มต้นตามที่รัฐบาลจัดสรรมา', ?)
         `).run(
           newId,
           parsedAllocated,
@@ -2550,19 +2729,16 @@ async function startServer() {
 
       res.json({ 
         id: newId, 
-        name: name.trim(),
+        name: cleanName,
         code: code ? code.trim() : null,
-        fiscal_year: fiscal_year ? String(fiscal_year).trim() : '2568',
+        fiscal_year: fy,
         allocated_budget: parsedAllocated,
-        success: true 
+        success: true,
+        message: `เพิ่มหมวดค่าใช้จ่าย "${cleanName}" ประจำปีงบประมาณ ${fy} วงเงิน ฿${parsedAllocated.toLocaleString()} บาท เรียบร้อยแล้ว`
       });
     } catch (err: any) {
       console.error("Error adding expense category:", err);
-      if (err.code === 'SQLITE_CONSTRAINT') {
-        res.status(400).json({ error: "ชื่อหมวดค่าใช้จ่ายนี้มีอยู่ในระบบแล้ว" });
-      } else {
-        res.status(500).json({ error: "Failed to add expense category" });
-      }
+      res.status(500).json({ error: "เกิดข้อผิดพลาดในการบันทึกหมวดค่าใช้จ่าย: " + (err.message || '') });
     }
   });
 

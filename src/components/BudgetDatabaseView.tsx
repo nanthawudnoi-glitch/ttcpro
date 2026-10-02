@@ -325,10 +325,9 @@ export const BudgetDatabaseView: React.FC<BudgetDatabaseViewProps> = ({
         s.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
         (s.code && s.code.toLowerCase().includes(searchQuery.toLowerCase())) ||
         (s.description && s.description.toLowerCase().includes(searchQuery.toLowerCase()));
-      const matchesCategory = selectedCategory === 'all' || s.category === selectedCategory;
-      return matchesSearch && matchesCategory;
+      return matchesSearch;
     });
-  }, [sources, searchQuery, selectedCategory]);
+  }, [sources, searchQuery]);
 
   const openAddModal = () => {
     const curYear = fiscalYearList.find(f => Boolean(f.is_current))?.year || '2568';
@@ -340,7 +339,7 @@ export const BudgetDatabaseView: React.FC<BudgetDatabaseViewProps> = ({
       code: `${yearShort}-BG-${String(sources.length + 1).padStart(2, '0')}`,
       fiscal_year: targetYear,
       total_budget: '',
-      category: 'เงินรายได้สถานศึกษา',
+      category: '',
       description: ''
     });
     setFormError(null);
@@ -354,7 +353,7 @@ export const BudgetDatabaseView: React.FC<BudgetDatabaseViewProps> = ({
       code: source.code || '',
       fiscal_year: source.fiscal_year || '2568',
       total_budget: source.total_budget ? String(source.total_budget) : '0',
-      category: source.category || 'เงินรายได้สถานศึกษา',
+      category: '',
       description: source.description || ''
     });
     setFormError(null);
@@ -395,7 +394,6 @@ export const BudgetDatabaseView: React.FC<BudgetDatabaseViewProps> = ({
           code: formData.code.trim(),
           fiscal_year: formData.fiscal_year,
           total_budget: budgetVal,
-          category: formData.category,
           description: formData.description.trim()
         })
       });
@@ -405,7 +403,7 @@ export const BudgetDatabaseView: React.FC<BudgetDatabaseViewProps> = ({
         setFormError(result?.error || 'เกิดข้อผิดพลาดในการบันทึกข้อมูล');
       } else {
         setIsModalOpen(false);
-        showToast(editingSource ? 'แก้ไขแหล่งงบประมาณเรียบร้อยแล้ว' : 'เพิ่มแหล่งงบประมาณใหม่เรียบร้อยแล้ว');
+        showToast(result?.message || (editingSource ? 'แก้ไขแหล่งงบประมาณเรียบร้อยแล้ว' : 'เพิ่มแหล่งงบประมาณใหม่เรียบร้อยแล้ว'));
         fetchBudgetSources();
       }
     } catch (err: any) {
@@ -764,23 +762,6 @@ export const BudgetDatabaseView: React.FC<BudgetDatabaseViewProps> = ({
               </select>
             </div>
 
-            {/* Category Selector */}
-            {availableCategories.length > 0 && (
-              <div className="flex items-center gap-1.5 bg-white px-3 py-1.5 rounded-xl border border-slate-200 shadow-sm text-xs">
-                <span className="text-slate-400 font-semibold">ประเภท:</span>
-                <select
-                  id="select-category-filter"
-                  value={selectedCategory}
-                  onChange={(e) => setSelectedCategory(e.target.value)}
-                  className="bg-transparent font-bold text-slate-700 outline-none cursor-pointer"
-                >
-                  <option value="all">ทุกประเภท</option>
-                  {availableCategories.map(cat => (
-                    <option key={cat} value={cat}>{cat}</option>
-                  ))}
-                </select>
-              </div>
-            )}
           </div>
         )}
       </div>
@@ -806,7 +787,7 @@ export const BudgetDatabaseView: React.FC<BudgetDatabaseViewProps> = ({
                 <tr className="bg-slate-50/70 text-slate-500 text-[11px] font-bold uppercase tracking-wider border-b border-slate-100">
                   <th className="px-6 py-4">รหัส / แหล่งงบประมาณ</th>
                   <th className="px-4 py-4 text-center">ปีงบประมาณ</th>
-                  <th className="px-4 py-4">ประเภท</th>
+                  <th className="px-4 py-4 text-center">งวดจัดสรร (รัฐบาล)</th>
                   <th className="px-4 py-4 text-right">วงเงินจัดสรร</th>
                   <th className="px-4 py-4 text-right">ยอดผูกพัน</th>
                   <th className="px-4 py-4 text-right">เบิกจ่ายแล้ว</th>
@@ -865,11 +846,18 @@ export const BudgetDatabaseView: React.FC<BudgetDatabaseViewProps> = ({
                           </span>
                         </td>
 
-                        {/* Category */}
-                        <td className="px-4 py-4">
-                          <span className="text-xs text-slate-600 font-medium">
-                            {source.category || '-'}
-                          </span>
+                        {/* Allocation Installments Button */}
+                        <td className="px-4 py-4 text-center">
+                          <button
+                            type="button"
+                            onClick={() => openAllocationsModal(source)}
+                            className="inline-flex items-center gap-1.5 px-3 py-1 bg-amber-50 hover:bg-amber-100 text-amber-800 rounded-lg text-xs font-bold transition-colors border border-amber-200 shadow-sm"
+                            title="คลิกเพื่อดูและเพิ่มงวดจัดสรรงบประมาณ (เพิ่มได้หลายครั้งตามที่รัฐบาลจัดสรรมา)"
+                          >
+                            <Coins size={13} className="text-amber-600" />
+                            จัดสรร {source.allocations_count || 1} ครั้ง
+                            {canManage && <Plus size={11} className="text-amber-700 ml-0.5" />}
+                          </button>
                         </td>
 
                         {/* Allocated Budget */}
@@ -1132,7 +1120,7 @@ export const BudgetDatabaseView: React.FC<BudgetDatabaseViewProps> = ({
                     <h3 className="font-bold text-slate-800 text-base">
                       {editingSource ? 'แก้ไขแหล่งงบประมาณ' : 'เพิ่มแหล่งงบประมาณใหม่'}
                     </h3>
-                    <p className="text-xs text-slate-400">กรอกข้อมูลแหล่งเงินและกรอบวงเงินที่ได้รับจัดสรร</p>
+                    <p className="text-xs text-slate-400">กรอกข้อมูลแหล่งเงินและกรอบวงเงินที่ได้รับจัดสรร (อิสระจากหมวดค่าใช้จ่าย และสามารถเพิ่มงวดจัดสรรได้หลายครั้ง)</p>
                   </div>
                 </div>
                 <button
@@ -1161,7 +1149,7 @@ export const BudgetDatabaseView: React.FC<BudgetDatabaseViewProps> = ({
                     placeholder="เช่น งบประมาณแผ่นดิน, เงินรายได้สถานศึกษา, งบอุดหนุน..."
                     value={formData.name}
                     onChange={(e) => setFormData({ ...formData, name: e.target.value })}
-                    className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs focus:ring-2 focus:ring-red-500 outline-none"
+                    className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs focus:ring-2 focus:ring-red-500 outline-none font-semibold text-slate-800"
                   />
                 </div>
 
@@ -1200,41 +1188,28 @@ export const BudgetDatabaseView: React.FC<BudgetDatabaseViewProps> = ({
                   </div>
                 </div>
 
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="space-y-1.5">
-                    <label className="block text-xs font-bold text-slate-700">
-                      ประเภทหมวดงบประมาณ
-                    </label>
-                    <select
-                      value={formData.category}
-                      onChange={(e) => setFormData({ ...formData, category: e.target.value })}
-                      className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs focus:ring-2 focus:ring-red-500 outline-none"
-                    >
-                      <option value="เงินรายได้สถานศึกษา">เงินรายได้สถานศึกษา</option>
-                      <option value="งบประมาณแผ่นดิน">งบประมาณแผ่นดิน</option>
-                      <option value="งบอุดหนุน">งบอุดหนุน</option>
-                      <option value="งบดำเนินงาน">งบดำเนินงาน</option>
-                      <option value="งบลงทุน">งบลงทุน</option>
-                      <option value="งบพัฒนาวิชาชีพ">งบพัฒนาวิชาชีพ</option>
-                      <option value="งบประมาณอื่น">งบประมาณอื่น</option>
-                    </select>
-                  </div>
-
-                  <div className="space-y-1.5">
+                <div className="space-y-1.5">
+                  <div className="flex items-center justify-between">
                     <label className="block text-xs font-bold text-slate-700">
                       วงเงินที่ได้รับจัดสรร (บาท) <span className="text-rose-500">*</span>
                     </label>
-                    <input
-                      type="number"
-                      step="any"
-                      min="0"
-                      required
-                      placeholder="0.00"
-                      value={formData.total_budget}
-                      onChange={(e) => setFormData({ ...formData, total_budget: e.target.value })}
-                      className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs focus:ring-2 focus:ring-red-500 outline-none font-bold text-slate-800"
-                    />
+                    <span className="text-[11px] text-amber-700 bg-amber-50 px-2 py-0.5 rounded font-medium border border-amber-200/60">
+                      เพิ่มงวดจัดสรรได้หลายครั้ง
+                    </span>
                   </div>
+                  <input
+                    type="number"
+                    step="any"
+                    min="0"
+                    required
+                    placeholder="0.00"
+                    value={formData.total_budget}
+                    onChange={(e) => setFormData({ ...formData, total_budget: e.target.value })}
+                    className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs focus:ring-2 focus:ring-red-500 outline-none font-bold text-slate-800"
+                  />
+                  <p className="text-[11px] text-slate-400">
+                    💡 ท่านสามารถระบุวงเงินเริ่มต้นนี้ได้ และเมื่อรัฐบาลจัดสรรงบประมาณเพิ่ม สามารถกดปุ่ม <span className="font-bold text-amber-700">"เพิ่มงวด"</span> ในตารางเพื่อบันทึกงวดที่ 2, 3... ได้ตลอดเวลา
+                  </p>
                 </div>
 
                 <div className="space-y-1.5">

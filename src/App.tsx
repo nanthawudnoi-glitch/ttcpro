@@ -1764,20 +1764,24 @@ export default function App() {
   };
 
   const handleAddBudgetSource = async () => {
-    const name = prompt('กรุณาระบุชื่อแหล่งงบประมาณใหม่:');
-    if (!name) return;
+    const name = prompt('กรุณาระบุชื่อแหล่งงบประมาณใหม่ (เช่น งบประมาณแผ่นดิน, เงินรายได้สถานศึกษา, งบอุดหนุน...):');
+    if (!name || !name.trim()) return;
+
+    const amountStr = prompt(`ระบุวงเงินที่ได้รับจัดสรรสำหรับ "${name.trim()}" (บาท) [เว้นว่างได้หากยังไม่ได้รับเงิน]:`, '0');
+    const amountVal = amountStr ? parseFloat(amountStr) || 0 : 0;
 
     try {
       const res = await fetch('/api/budget-sources', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name })
+        body: JSON.stringify({ name: name.trim(), total_budget: amountVal })
       });
+      const data = await safeParseJson(res);
       if (res.ok) {
-        alert('เพิ่มแหล่งงบประมาณเรียบร้อยแล้ว');
+        alert(`✅ ${data?.message || 'บันทึกแหล่งงบประมาณเรียบร้อยแล้ว'}`);
         fetchBudgetSources();
       } else {
-        alert('เกิดข้อผิดพลาดในการเพิ่มแหล่งงบประมาณ');
+        alert('เกิดข้อผิดพลาด: ' + (data?.error || 'ไม่สามารถบันทึกแหล่งงบประมาณได้'));
       }
     } catch (err) {
       console.error(err);
@@ -1790,11 +1794,12 @@ export default function App() {
 
     try {
       const res = await fetch(`/api/budget-sources/${id}`, { method: 'DELETE' });
+      const data = await safeParseJson(res);
       if (res.ok) {
         alert('ลบแหล่งงบประมาณเรียบร้อยแล้ว');
         fetchBudgetSources();
       } else {
-        alert('เกิดข้อผิดพลาดในการลบแหล่งงบประมาณ');
+        alert('เกิดข้อผิดพลาด: ' + (data?.error || 'ไม่สามารถลบแหล่งงบประมาณได้'));
       }
     } catch (err) {
       console.error(err);
@@ -1803,20 +1808,24 @@ export default function App() {
   };
 
   const handleAddExpenseCategory = async () => {
-    const name = prompt('กรุณาระบุชื่อหมวดค่าใช้จ่ายใหม่:');
-    if (!name) return;
+    const name = prompt('กรุณาระบุชื่อหมวดค่าใช้จ่ายใหม่ (เช่น ค่าจัดการเรียนการสอน, ค่าวัสดุ, ค่าครุภัณฑ์...):');
+    if (!name || !name.trim()) return;
+
+    const amountStr = prompt(`ระบุวงเงินที่ได้รับจัดสรรสำหรับ "${name.trim()}" (บาท) [เว้นว่างได้หากยังไม่ได้รับเงิน]:`, '0');
+    const amountVal = amountStr ? parseFloat(amountStr) || 0 : 0;
 
     try {
       const res = await fetch('/api/expense-categories', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name })
+        body: JSON.stringify({ name: name.trim(), allocated_budget: amountVal })
       });
+      const data = await safeParseJson(res);
       if (res.ok) {
-        alert('เพิ่มหมวดค่าใช้จ่ายเรียบร้อยแล้ว');
+        alert(`✅ ${data?.message || 'บันทึกหมวดค่าใช้จ่ายเรียบร้อยแล้ว'}`);
         fetchExpenseCategories();
       } else {
-        alert('เกิดข้อผิดพลาดในการเพิ่มหมวดค่าใช้จ่าย');
+        alert('เกิดข้อผิดพลาด: ' + (data?.error || 'ไม่สามารถบันทึกหมวดค่าใช้จ่ายได้'));
       }
     } catch (err) {
       console.error(err);
@@ -1829,11 +1838,12 @@ export default function App() {
 
     try {
       const res = await fetch(`/api/expense-categories/${id}`, { method: 'DELETE' });
+      const data = await safeParseJson(res);
       if (res.ok) {
         alert('ลบหมวดค่าใช้จ่ายเรียบร้อยแล้ว');
         fetchExpenseCategories();
       } else {
-        alert('เกิดข้อผิดพลาดในการลบหมวดค่าใช้จ่าย');
+        alert('เกิดข้อผิดพลาด: ' + (data?.error || 'ไม่สามารถลบหมวดค่าใช้จ่ายได้'));
       }
     } catch (err) {
       console.error(err);
