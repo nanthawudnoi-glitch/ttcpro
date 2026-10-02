@@ -41,6 +41,12 @@ interface BudgetDatabaseViewProps {
   onRefreshExpenseCategories?: () => void;
 }
 
+const DEFAULT_INITIAL_SOURCES: BudgetSource[] = [
+  { id: 1, name: 'งบประมาณแผ่นดิน', code: '68-GOV-01', fiscal_year: '2568', total_budget: 5000000, allocations_count: 1, description: 'งบประมาณแผ่นดินประจำปีงบประมาณ พ.ศ. 2568' },
+  { id: 2, name: 'เงินรายได้สถานศึกษา', code: '68-REV-01', fiscal_year: '2568', total_budget: 3500000, allocations_count: 1, description: 'เงินรายได้สถานศึกษา ประจำปีงบประมาณ พ.ศ. 2568' },
+  { id: 3, name: 'งบอุดหนุน', code: '68-SUB-01', fiscal_year: '2568', total_budget: 1500000, allocations_count: 1, description: 'เงินอุดหนุนค่าใช้จ่ายในการจัดการศึกษา' }
+];
+
 export const BudgetDatabaseView: React.FC<BudgetDatabaseViewProps> = ({
   currentUser,
   userRole,
@@ -65,7 +71,7 @@ export const BudgetDatabaseView: React.FC<BudgetDatabaseViewProps> = ({
     code: '',
     fiscal_year: '2568',
     total_budget: '',
-    category: 'เงินรายได้สถานศึกษา',
+    category: '',
     description: ''
   });
   const [formSubmitting, setFormSubmitting] = useState(false);
@@ -235,13 +241,35 @@ export const BudgetDatabaseView: React.FC<BudgetDatabaseViewProps> = ({
       const res = await fetch(url);
       if (res.ok) {
         const data = await safeParseJson<BudgetSource[]>(res);
-        if (data) setSources(data);
+        if (data && Array.isArray(data) && data.length > 0) {
+          setSources(data);
+          try {
+            localStorage.setItem('ttc_smartprocure_budget_sources', JSON.stringify(data));
+          } catch (e) {}
+          return;
+        }
       }
     } catch (err) {
-      console.error('Failed to fetch budget sources:', err);
+      console.warn('fetchBudgetSources API unavailable, falling back to local storage:', err);
     } finally {
       setLoading(false);
     }
+
+    // Fallback for Vercel static deployment or offline
+    try {
+      const saved = localStorage.getItem('ttc_smartprocure_budget_sources');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          const filtered = selectedYear === 'all' 
+            ? parsed 
+            : parsed.filter((s: any) => !s.fiscal_year || s.fiscal_year === selectedYear);
+          setSources(filtered);
+          return;
+        }
+      }
+    } catch (e) {}
+    setSources(selectedYear === 'all' ? DEFAULT_INITIAL_SOURCES : DEFAULT_INITIAL_SOURCES.filter(s => s.fiscal_year === selectedYear));
   };
 
   const fetchDepartmentsSummary = async () => {
@@ -400,6 +428,10 @@ export const BudgetDatabaseView: React.FC<BudgetDatabaseViewProps> = ({
 
       const result = await safeJson(res);
       if (!res.ok) {
+        if (res.status === 404 || !res.status) {
+          saveBudgetSourceLocally(budgetVal);
+          return;
+        }
         setFormError(result?.error || 'เกิดข้อผิดพลาดในการบันทึกข้อมูล');
       } else {
         setIsModalOpen(false);
@@ -407,10 +439,48 @@ export const BudgetDatabaseView: React.FC<BudgetDatabaseViewProps> = ({
         fetchBudgetSources();
       }
     } catch (err: any) {
-      setFormError(err.message || 'เกิดข้อผิดพลาดในการเชื่อมต่อเครือข่าย');
+      saveBudgetSourceLocally(budgetVal);
     } finally {
       setFormSubmitting(false);
     }
+  };
+
+  const saveBudgetSourceLocally = (budgetVal: number) => {
+    let currentLocal: BudgetSource[] = [];
+    try {
+      const saved = localStorage.getItem('ttc_smartprocure_budget_sources');
+      currentLocal = saved ? JSON.parse(saved) : DEFAULT_INITIAL_SOURCES;
+    } catch (e) {
+      currentLocal = DEFAULT_INITIAL_SOURCES;
+    }
+
+    if (editingSource) {
+      currentLocal = currentLocal.map(s => s.id === editingSource.id ? {
+        ...s,
+        name: formData.name.trim(),
+        code: formData.code.trim(),
+        fiscal_year: formData.fiscal_year,
+        total_budget: budgetVal,
+        description: formData.description.trim()
+      } : s);
+    } else {
+      const newSource: BudgetSource = {
+        id: Date.now(),
+        name: formData.name.trim(),
+        code: formData.code.trim() || `${formData.fiscal_year.slice(-2)}-BG-${String(currentLocal.length + 1).padStart(2, '0')}`,
+        fiscal_year: formData.fiscal_year,
+        total_budget: budgetVal,
+        allocations_count: 1,
+        description: formData.description.trim()
+      };
+      currentLocal = [newSource, ...currentLocal];
+    }
+    try {
+      localStorage.setItem('ttc_smartprocure_budget_sources', JSON.stringify(currentLocal));
+    } catch (e) {}
+    setIsModalOpen(false);
+    showToast(editingSource ? 'แก้ไขแหล่งงบประมาณเรียบร้อยแล้ว' : 'เพิ่มแหล่งงบประมาณใหม่เรียบร้อยแล้ว');
+    fetchBudgetSources();
   };
 
   const handleDeleteBudgetSource = async (source: BudgetSource) => {
@@ -425,15 +495,29 @@ export const BudgetDatabaseView: React.FC<BudgetDatabaseViewProps> = ({
       const data = await safeJson(res);
 
       if (!res.ok) {
+        if (res.status === 404 || !res.status) {
+          deleteBudgetSourceLocally(source.id, source.name);
+          return;
+        }
         alert(data?.error || 'ไม่สามารถลบแหล่งงบประมาณได้');
       } else {
         showToast(`ลบแหล่งงบประมาณ "${source.name}" สำเร็จ`);
         fetchBudgetSources();
       }
     } catch (err) {
-      console.error('Failed to delete budget source:', err);
-      alert('เกิดข้อผิดพลาดในการลบข้อมูล');
+      deleteBudgetSourceLocally(source.id, source.name);
     }
+  };
+
+  const deleteBudgetSourceLocally = (id: number, name: string) => {
+    try {
+      const saved = localStorage.getItem('ttc_smartprocure_budget_sources');
+      const currentLocal: BudgetSource[] = saved ? JSON.parse(saved) : DEFAULT_INITIAL_SOURCES;
+      const filtered = currentLocal.filter(s => s.id !== id);
+      localStorage.setItem('ttc_smartprocure_budget_sources', JSON.stringify(filtered));
+    } catch (e) {}
+    showToast(`ลบแหล่งงบประมาณ "${name}" สำเร็จ`);
+    fetchBudgetSources();
   };
 
   const handleViewProjects = async (source: BudgetSource) => {

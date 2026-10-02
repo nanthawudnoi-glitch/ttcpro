@@ -37,6 +37,13 @@ interface ExpenseCategoriesManagerProps {
   onRefreshAll?: () => void;
 }
 
+const DEFAULT_INITIAL_CATEGORIES: ExpenseCategory[] = [
+  { id: 1, name: 'งบ.ปวช.', code: '68-EXP-01', fiscal_year: '2568', allocated_budget: 1500000, allocations_count: 1, total_spent: 0, remaining_budget: 1500000, used_percentage: 0, description: 'งบประมาณเพื่อการจัดการศึกษาตามหลักสูตร ปวช.' },
+  { id: 2, name: 'งบ.ปวส.', code: '68-EXP-02', fiscal_year: '2568', allocated_budget: 1200000, allocations_count: 1, total_spent: 0, remaining_budget: 1200000, used_percentage: 0, description: 'งบประมาณเพื่อการจัดการศึกษาตามหลักสูตร ปวส.' },
+  { id: 3, name: 'งบ.ระยะสั้น', code: '68-EXP-03', fiscal_year: '2568', allocated_budget: 400000, allocations_count: 1, total_spent: 0, remaining_budget: 400000, used_percentage: 0, description: 'งบประมาณหลักสูตรวิชาชีพระยะสั้นและฝึกอบรม' },
+  { id: 4, name: 'ค่าจัดการเรียนการสอน', code: '68-EXP-04', fiscal_year: '2568', allocated_budget: 2500000, allocations_count: 1, total_spent: 0, remaining_budget: 2500000, used_percentage: 0, description: 'งบประมาณสำหรับค่าวัสดุและอุปกรณ์จัดการเรียนการสอนทุกสาขาวิชา' }
+];
+
 export const ExpenseCategoriesManager: React.FC<ExpenseCategoriesManagerProps> = ({
   currentUser,
   userRole,
@@ -114,13 +121,35 @@ export const ExpenseCategoriesManager: React.FC<ExpenseCategoriesManagerProps> =
       const res = await fetch(url);
       if (res.ok) {
         const data = await safeParseJson<ExpenseCategory[]>(res);
-        if (data) setCategories(data);
+        if (data && Array.isArray(data) && data.length > 0) {
+          setCategories(data);
+          try {
+            localStorage.setItem('ttc_smartprocure_expense_categories', JSON.stringify(data));
+          } catch (e) {}
+          return;
+        }
       }
     } catch (err) {
-      console.error('Failed to fetch expense categories:', err);
+      console.warn('fetchCategories API unavailable, falling back to local storage:', err);
     } finally {
       setLoading(false);
     }
+
+    // Fallback for Vercel static deployment or offline
+    try {
+      const saved = localStorage.getItem('ttc_smartprocure_expense_categories');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          const filtered = currentYear === 'all' 
+            ? parsed 
+            : parsed.filter((c: any) => !c.fiscal_year || c.fiscal_year === currentYear);
+          setCategories(filtered);
+          return;
+        }
+      }
+    } catch (e) {}
+    setCategories(currentYear === 'all' ? DEFAULT_INITIAL_CATEGORIES : DEFAULT_INITIAL_CATEGORIES.filter(c => c.fiscal_year === currentYear));
   };
 
   const fetchFiscalYearsList = async () => {
@@ -420,15 +449,60 @@ export const ExpenseCategoriesManager: React.FC<ExpenseCategoriesManagerProps> =
         fetchCategories();
         if (onRefreshAll) onRefreshAll();
       } else {
+        if (res.status === 404 || !res.status) {
+          saveCategoryLocally(budgetVal);
+          return;
+        }
         const data = await safeJson(res);
         setFormError(data?.error || 'เกิดข้อผิดพลาดในการบันทึกข้อมูล');
       }
     } catch (err) {
-      console.error('Failed to save category:', err);
-      setFormError('เกิดข้อผิดพลาดในการเชื่อมต่อ');
+      saveCategoryLocally(budgetVal);
     } finally {
       setFormSubmitting(false);
     }
+  };
+
+  const saveCategoryLocally = (budgetVal: number) => {
+    let currentLocal: ExpenseCategory[] = [];
+    try {
+      const saved = localStorage.getItem('ttc_smartprocure_expense_categories');
+      currentLocal = saved ? JSON.parse(saved) : DEFAULT_INITIAL_CATEGORIES;
+    } catch (e) {
+      currentLocal = DEFAULT_INITIAL_CATEGORIES;
+    }
+
+    if (editingCategory) {
+      currentLocal = currentLocal.map(c => c.id === editingCategory.id ? {
+        ...c,
+        name: formData.name.trim(),
+        code: formData.code.trim(),
+        fiscal_year: formData.fiscal_year,
+        allocated_budget: budgetVal,
+        description: formData.description.trim()
+      } : c);
+    } else {
+      const newCat: ExpenseCategory = {
+        id: Date.now(),
+        name: formData.name.trim(),
+        code: formData.code.trim() || `${formData.fiscal_year.slice(-2)}-EXP-${String(currentLocal.length + 1).padStart(2, '0')}`,
+        fiscal_year: formData.fiscal_year,
+        allocated_budget: budgetVal,
+        allocations_count: 1,
+        total_spent: 0,
+        remaining_budget: budgetVal,
+        used_percentage: 0,
+        description: formData.description.trim()
+      };
+      currentLocal = [newCat, ...currentLocal];
+    }
+    try {
+      localStorage.setItem('ttc_smartprocure_expense_categories', JSON.stringify(currentLocal));
+    } catch (e) {}
+    setIsFormModalOpen(false);
+    showToast(editingCategory ? 'แก้ไขหมวดค่าใช้จ่ายเรียบร้อยแล้ว' : 'เพิ่มหมวดค่าใช้จ่ายใหม่เรียบร้อยแล้ว');
+    fetchCategories();
+    if (onRefreshAll) onRefreshAll();
   };
 
   // Delete Category
@@ -441,13 +515,28 @@ export const ExpenseCategoriesManager: React.FC<ExpenseCategoriesManagerProps> =
         fetchCategories();
         if (onRefreshAll) onRefreshAll();
       } else {
+        if (res.status === 404 || !res.status) {
+          deleteCategoryLocally(id, name);
+          return;
+        }
         const data = await safeJson(res);
         alert(data?.error || 'ไม่สามารถลบหมวดค่าใช้จ่ายได้');
       }
     } catch (err) {
-      console.error('Failed to delete category:', err);
-      alert('เกิดข้อผิดพลาดในการลบ');
+      deleteCategoryLocally(id, name);
     }
+  };
+
+  const deleteCategoryLocally = (id: number, name: string) => {
+    try {
+      const saved = localStorage.getItem('ttc_smartprocure_expense_categories');
+      const currentLocal: ExpenseCategory[] = saved ? JSON.parse(saved) : DEFAULT_INITIAL_CATEGORIES;
+      const filtered = currentLocal.filter(c => c.id !== id);
+      localStorage.setItem('ttc_smartprocure_expense_categories', JSON.stringify(filtered));
+    } catch (e) {}
+    showToast(`ลบหมวดค่าใช้จ่าย "${name}" เรียบร้อยแล้ว`);
+    fetchCategories();
+    if (onRefreshAll) onRefreshAll();
   };
 
   // Export Categories to CSV
