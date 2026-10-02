@@ -600,6 +600,15 @@ export default function App() {
   const [showBatchDeleteModal, setShowBatchDeleteModal] = useState(false);
   const [isBatchDeleting, setIsBatchDeleting] = useState(false);
 
+  // Settings View Deletion & Category Modals State
+  const [sourceToDeleteInSettings, setSourceToDeleteInSettings] = useState<BudgetSource | null>(null);
+  const [categoryToDeleteInSettings, setCategoryToDeleteInSettings] = useState<ExpenseCategory | null>(null);
+  const [isDeletingInSettings, setIsDeletingInSettings] = useState(false);
+  const [deleteInSettingsError, setDeleteInSettingsError] = useState<string | null>(null);
+  const [showAddCategoryModalInSettings, setShowAddCategoryModalInSettings] = useState(false);
+  const [newCatNameInSettings, setNewCatNameInSettings] = useState('');
+  const [newCatAmountInSettings, setNewCatAmountInSettings] = useState('');
+
   const canDeleteProject = (proj: Project | null | undefined): boolean => {
     if (!proj || !currentUser || userRole === 'GUEST') return false;
     if (['ADMIN', 'PLANNING_STAFF', 'PLANNING_HEAD', 'DEPUTY_DIRECTOR_PLANNING'].includes(userRole)) {
@@ -1789,65 +1798,80 @@ export default function App() {
     }
   };
 
-  const handleDeleteBudgetSource = async (id: number) => {
-    if (!confirm('คุณแน่ใจหรือไม่ว่าต้องการลบแหล่งงบประมาณนี้?')) return;
-
+  const confirmDeleteBudgetSourceInSettings = async () => {
+    if (!sourceToDeleteInSettings) return;
+    setIsDeletingInSettings(true);
+    setDeleteInSettingsError(null);
     try {
-      const res = await fetch(`/api/budget-sources/${id}`, { method: 'DELETE' });
+      const res = await fetch(`/api/budget-sources/${sourceToDeleteInSettings.id}`, { method: 'DELETE' });
       const data = await safeParseJson(res);
       if (res.ok) {
-        alert('ลบแหล่งงบประมาณเรียบร้อยแล้ว');
+        showToast('ลบแหล่งงบประมาณเรียบร้อยแล้ว', 'success');
+        setSourceToDeleteInSettings(null);
         fetchBudgetSources();
       } else {
-        alert('เกิดข้อผิดพลาด: ' + (data?.error || 'ไม่สามารถลบแหล่งงบประมาณได้'));
+        setDeleteInSettingsError(data?.error || 'ไม่สามารถลบแหล่งงบประมาณได้');
       }
     } catch (err) {
       console.error(err);
-      alert('เกิดข้อผิดพลาดในการเชื่อมต่อ');
+      setDeleteInSettingsError('เกิดข้อผิดพลาดในการเชื่อมต่อเซิร์ฟเวอร์');
+    } finally {
+      setIsDeletingInSettings(false);
     }
   };
 
-  const handleAddExpenseCategory = async () => {
-    const name = prompt('กรุณาระบุชื่อหมวดค่าใช้จ่ายใหม่ (เช่น ค่าจัดการเรียนการสอน, ค่าวัสดุ, ค่าครุภัณฑ์...):');
-    if (!name || !name.trim()) return;
+  const confirmDeleteCategoryInSettings = async () => {
+    if (!categoryToDeleteInSettings) return;
+    setIsDeletingInSettings(true);
+    setDeleteInSettingsError(null);
+    try {
+      const res = await fetch(`/api/expense-categories/${categoryToDeleteInSettings.id}`, { method: 'DELETE' });
+      const data = await safeParseJson(res);
+      if (res.ok) {
+        showToast('ลบหมวดค่าใช้จ่ายเรียบร้อยแล้ว', 'success');
+        setCategoryToDeleteInSettings(null);
+        fetchExpenseCategories();
+      } else {
+        setDeleteInSettingsError(data?.error || 'ไม่สามารถลบหมวดค่าใช้จ่ายได้');
+      }
+    } catch (err) {
+      console.error(err);
+      setDeleteInSettingsError('เกิดข้อผิดพลาดในการเชื่อมต่อเซิร์ฟเวอร์');
+    } finally {
+      setIsDeletingInSettings(false);
+    }
+  };
 
-    const amountStr = prompt(`ระบุวงเงินที่ได้รับจัดสรรสำหรับ "${name.trim()}" (บาท) [เว้นว่างได้หากยังไม่ได้รับเงิน]:`, '0');
-    const amountVal = amountStr ? parseFloat(amountStr) || 0 : 0;
-
+  const handleSaveAddCategoryInSettings = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newCatNameInSettings || !newCatNameInSettings.trim()) {
+      showToast('กรุณาระบุชื่อหมวดค่าใช้จ่าย', 'error');
+      return;
+    }
+    const amountVal = parseFloat(newCatAmountInSettings) || 0;
     try {
       const res = await fetch('/api/expense-categories', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: name.trim(), allocated_budget: amountVal })
+        body: JSON.stringify({
+          name: newCatNameInSettings.trim(),
+          allocated_budget: amountVal,
+          fiscal_year: selectedFiscalYear || '2568'
+        })
       });
       const data = await safeParseJson(res);
       if (res.ok) {
-        alert(`✅ ${data?.message || 'บันทึกหมวดค่าใช้จ่ายเรียบร้อยแล้ว'}`);
+        showToast(`บันทึกหมวดค่าใช้จ่ายเรียบร้อยแล้ว`, 'success');
+        setNewCatNameInSettings('');
+        setNewCatAmountInSettings('');
+        setShowAddCategoryModalInSettings(false);
         fetchExpenseCategories();
       } else {
-        alert('เกิดข้อผิดพลาด: ' + (data?.error || 'ไม่สามารถบันทึกหมวดค่าใช้จ่ายได้'));
+        showToast(data?.error || 'ไม่สามารถบันทึกหมวดค่าใช้จ่ายได้', 'error');
       }
     } catch (err) {
       console.error(err);
-      alert('เกิดข้อผิดพลาดในการเชื่อมต่อ');
-    }
-  };
-
-  const handleDeleteExpenseCategory = async (id: number) => {
-    if (!confirm('คุณแน่ใจหรือไม่ว่าต้องการลบหมวดค่าใช้จ่ายนี้?')) return;
-
-    try {
-      const res = await fetch(`/api/expense-categories/${id}`, { method: 'DELETE' });
-      const data = await safeParseJson(res);
-      if (res.ok) {
-        alert('ลบหมวดค่าใช้จ่ายเรียบร้อยแล้ว');
-        fetchExpenseCategories();
-      } else {
-        alert('เกิดข้อผิดพลาด: ' + (data?.error || 'ไม่สามารถลบหมวดค่าใช้จ่ายได้'));
-      }
-    } catch (err) {
-      console.error(err);
-      alert('เกิดข้อผิดพลาดในการเชื่อมต่อ');
+      showToast('เกิดข้อผิดพลาดในการเชื่อมต่อ', 'error');
     }
   };
 
@@ -6420,10 +6444,13 @@ export default function App() {
                             <td className="px-6 py-4 text-sm font-bold text-slate-700">{source.name}</td>
                             <td className="px-6 py-4">
                               <button 
-                                onClick={() => handleDeleteBudgetSource(source.id)}
-                                className="text-xs font-bold text-red-600 hover:underline flex items-center gap-1"
+                                onClick={() => {
+                                  setDeleteInSettingsError(null);
+                                  setSourceToDeleteInSettings(source);
+                                }}
+                                className="text-xs font-bold text-red-600 hover:text-red-700 hover:bg-red-50 px-2.5 py-1 rounded-lg transition-colors flex items-center gap-1"
                               >
-                                <Plus size={12} className="rotate-45" />
+                                <Trash2 size={13} />
                                 ลบ
                               </button>
                             </td>
@@ -6441,7 +6468,7 @@ export default function App() {
                       <p className="text-xs text-slate-400">เพิ่มหรือลบหมวดค่าใช้จ่ายในระบบ</p>
                     </div>
                     <button 
-                      onClick={handleAddExpenseCategory}
+                      onClick={() => setShowAddCategoryModalInSettings(true)}
                       className="flex items-center gap-2 px-4 py-2 bg-red-700 text-white text-xs font-bold rounded-xl hover:bg-red-800 transition-colors"
                     >
                       <Plus size={16} />
@@ -6462,10 +6489,13 @@ export default function App() {
                             <td className="px-6 py-4 text-sm font-bold text-slate-700">{cat.name}</td>
                             <td className="px-6 py-4">
                               <button 
-                                onClick={() => handleDeleteExpenseCategory(cat.id)}
-                                className="text-xs font-bold text-red-600 hover:underline flex items-center gap-1"
+                                onClick={() => {
+                                  setDeleteInSettingsError(null);
+                                  setCategoryToDeleteInSettings(cat);
+                                }}
+                                className="text-xs font-bold text-red-600 hover:text-red-700 hover:bg-red-50 px-2.5 py-1 rounded-lg transition-colors flex items-center gap-1"
                               >
-                                <Plus size={12} className="rotate-45" />
+                                <Trash2 size={13} />
                                 ลบ
                               </button>
                             </td>
@@ -11299,6 +11329,218 @@ export default function App() {
                   )}
                 </button>
               </div>
+            </motion.div>
+          </div>
+        )}
+
+        {/* Modal: ยืนยันการลบแหล่งงบประมาณ ในหน้าการตั้งค่า */}
+        {sourceToDeleteInSettings && (
+          <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
+            <motion.div
+              initial={{ scale: 0.95, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.95, opacity: 0 }}
+              className="bg-white rounded-3xl max-w-md w-full p-6 shadow-2xl border border-slate-100"
+            >
+              <div className="w-12 h-12 rounded-2xl bg-rose-100 text-rose-600 flex items-center justify-center mx-auto mb-4 shadow-sm">
+                <Trash2 size={24} />
+              </div>
+              <h3 className="text-lg font-bold text-slate-900 text-center mb-1">
+                ยืนยันการลบแหล่งงบประมาณ?
+              </h3>
+              <p className="text-xs text-slate-500 text-center mb-4">
+                คุณกำลังจะลบข้อมูลแหล่งงบประมาณออกจากระบบ การดำเนินการนี้ไม่สามารถย้อนกลับได้
+              </p>
+
+              <div className="bg-slate-50 p-3.5 rounded-2xl border border-slate-100 mb-4 text-xs space-y-2">
+                <div className="flex justify-between items-center">
+                  <span className="text-slate-400">ชื่อแหล่งงบประมาณ:</span>
+                  <span className="font-black text-slate-800 text-sm">{sourceToDeleteInSettings.name}</span>
+                </div>
+                <div className="flex justify-between items-center">
+                  <span className="text-slate-400">ปีงบประมาณ:</span>
+                  <span className="font-bold text-slate-700">พ.ศ. {sourceToDeleteInSettings.fiscal_year || '2568'}</span>
+                </div>
+                <div className="flex justify-between items-center">
+                  <span className="text-slate-400">วงเงินงบประมาณ:</span>
+                  <span className="font-black text-red-600">฿{Number(sourceToDeleteInSettings.total_budget || 0).toLocaleString()}</span>
+                </div>
+              </div>
+
+              {deleteInSettingsError && (
+                <div className="bg-rose-50 border border-rose-200 text-rose-700 p-3 rounded-xl text-xs mb-4 flex items-start gap-2">
+                  <AlertCircle size={16} className="text-rose-600 shrink-0 mt-0.5" />
+                  <div>{deleteInSettingsError}</div>
+                </div>
+              )}
+
+              <div className="flex gap-3">
+                <button
+                  type="button"
+                  disabled={isDeletingInSettings}
+                  onClick={() => {
+                    setSourceToDeleteInSettings(null);
+                    setDeleteInSettingsError(null);
+                  }}
+                  className="flex-1 py-3 bg-slate-100 text-slate-700 font-bold rounded-xl hover:bg-slate-200 transition-colors text-sm"
+                >
+                  ยกเลิก
+                </button>
+                <button
+                  type="button"
+                  disabled={isDeletingInSettings}
+                  onClick={confirmDeleteBudgetSourceInSettings}
+                  className="flex-1 py-3 bg-rose-600 text-white font-bold rounded-xl hover:bg-rose-700 transition-colors shadow-lg shadow-rose-200 text-sm disabled:opacity-50 flex items-center justify-center gap-2"
+                >
+                  {isDeletingInSettings ? (
+                    <>
+                      <span className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                      กำลังลบ...
+                    </>
+                  ) : (
+                    'ยืนยันลบ'
+                  )}
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+
+        {/* Modal: ยืนยันการลบหมวดค่าใช้จ่าย ในหน้าการตั้งค่า */}
+        {categoryToDeleteInSettings && (
+          <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
+            <motion.div
+              initial={{ scale: 0.95, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.95, opacity: 0 }}
+              className="bg-white rounded-3xl max-w-md w-full p-6 shadow-2xl border border-slate-100"
+            >
+              <div className="w-12 h-12 rounded-2xl bg-rose-100 text-rose-600 flex items-center justify-center mx-auto mb-4 shadow-sm">
+                <Trash2 size={24} />
+              </div>
+              <h3 className="text-lg font-bold text-slate-900 text-center mb-1">
+                ยืนยันการลบหมวดค่าใช้จ่าย?
+              </h3>
+              <p className="text-xs text-slate-500 text-center mb-4">
+                คุณกำลังจะลบหมวดค่าใช้จ่ายออกจากระบบ การดำเนินการนี้ไม่สามารถย้อนกลับได้
+              </p>
+
+              <div className="bg-slate-50 p-3.5 rounded-2xl border border-slate-100 mb-4 text-xs space-y-2">
+                <div className="flex justify-between items-center">
+                  <span className="text-slate-400">ชื่อหมวดค่าใช้จ่าย:</span>
+                  <span className="font-black text-slate-800 text-sm">{categoryToDeleteInSettings.name}</span>
+                </div>
+                <div className="flex justify-between items-center">
+                  <span className="text-slate-400">วงเงินจัดสรร:</span>
+                  <span className="font-black text-red-600">฿{Number(categoryToDeleteInSettings.allocated_budget || 0).toLocaleString()}</span>
+                </div>
+              </div>
+
+              {deleteInSettingsError && (
+                <div className="bg-rose-50 border border-rose-200 text-rose-700 p-3 rounded-xl text-xs mb-4 flex items-start gap-2">
+                  <AlertCircle size={16} className="text-rose-600 shrink-0 mt-0.5" />
+                  <div>{deleteInSettingsError}</div>
+                </div>
+              )}
+
+              <div className="flex gap-3">
+                <button
+                  type="button"
+                  disabled={isDeletingInSettings}
+                  onClick={() => {
+                    setCategoryToDeleteInSettings(null);
+                    setDeleteInSettingsError(null);
+                  }}
+                  className="flex-1 py-3 bg-slate-100 text-slate-700 font-bold rounded-xl hover:bg-slate-200 transition-colors text-sm"
+                >
+                  ยกเลิก
+                </button>
+                <button
+                  type="button"
+                  disabled={isDeletingInSettings}
+                  onClick={confirmDeleteCategoryInSettings}
+                  className="flex-1 py-3 bg-rose-600 text-white font-bold rounded-xl hover:bg-rose-700 transition-colors shadow-lg shadow-rose-200 text-sm disabled:opacity-50 flex items-center justify-center gap-2"
+                >
+                  {isDeletingInSettings ? (
+                    <>
+                      <span className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                      กำลังลบ...
+                    </>
+                  ) : (
+                    'ยืนยันลบ'
+                  )}
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+
+        {/* Modal: เพิ่มหมวดค่าใช้จ่าย ในหน้าการตั้งค่า */}
+        {showAddCategoryModalInSettings && (
+          <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
+            <motion.div
+              initial={{ scale: 0.95, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.95, opacity: 0 }}
+              className="bg-white rounded-3xl max-w-md w-full p-6 shadow-2xl border border-slate-100"
+            >
+              <div className="flex items-center justify-between pb-3 border-b border-slate-100 mb-4">
+                <h3 className="text-base font-bold text-slate-900">เพิ่มหมวดค่าใช้จ่ายใหม่</h3>
+                <button
+                  type="button"
+                  onClick={() => setShowAddCategoryModalInSettings(false)}
+                  className="p-1 rounded-lg hover:bg-slate-100 text-slate-400"
+                >
+                  ✕
+                </button>
+              </div>
+
+              <form onSubmit={handleSaveAddCategoryInSettings} className="space-y-4">
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 mb-1.5">
+                    ชื่อหมวดค่าใช้จ่าย *
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    placeholder="เช่น ค่าจัดการเรียนการสอน, ค่าวัสดุฝึก..."
+                    value={newCatNameInSettings}
+                    onChange={(e) => setNewCatNameInSettings(e.target.value)}
+                    className="w-full px-3.5 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs outline-none focus:ring-2 focus:ring-red-500"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 mb-1.5">
+                    วงเงินที่ได้รับจัดสรร (บาท)
+                  </label>
+                  <input
+                    type="number"
+                    step="any"
+                    min="0"
+                    placeholder="0.00 (เว้นว่างได้)"
+                    value={newCatAmountInSettings}
+                    onChange={(e) => setNewCatAmountInSettings(e.target.value)}
+                    className="w-full px-3.5 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs outline-none focus:ring-2 focus:ring-red-500 font-mono"
+                  />
+                </div>
+
+                <div className="pt-3 flex gap-3 border-t border-slate-100">
+                  <button
+                    type="button"
+                    onClick={() => setShowAddCategoryModalInSettings(false)}
+                    className="flex-1 py-2.5 bg-slate-100 text-slate-700 font-bold rounded-xl hover:bg-slate-200 transition-colors text-xs"
+                  >
+                    ยกเลิก
+                  </button>
+                  <button
+                    type="submit"
+                    className="flex-1 py-2.5 bg-red-700 hover:bg-red-800 text-white font-bold rounded-xl transition-colors shadow-md shadow-red-200 text-xs"
+                  >
+                    บันทึกหมวดใหม่
+                  </button>
+                </div>
+              </form>
             </motion.div>
           </div>
         )}

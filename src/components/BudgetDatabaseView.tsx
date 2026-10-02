@@ -108,6 +108,15 @@ export const BudgetDatabaseView: React.FC<BudgetDatabaseViewProps> = ({
   // Toast feedback
   const [toastMessage, setToastMessage] = useState<string | null>(null);
 
+  // Delete Source In-App Modal
+  const [sourceToDelete, setSourceToDelete] = useState<BudgetSource | null>(null);
+  const [isDeletingSource, setIsDeletingSource] = useState(false);
+  const [deleteSourceError, setDeleteSourceError] = useState<string | null>(null);
+
+  // Delete Allocation In-App Modal
+  const [allocationToDelete, setAllocationToDelete] = useState<{ id: number; title: string; amount: number; installment_no: number } | null>(null);
+  const [isDeletingAllocation, setIsDeletingAllocation] = useState(false);
+
   const canManage = ['ADMIN', 'PLANNING_HEAD', 'PLANNING_STAFF', 'DEPUTY_DIRECTOR_PLANNING'].includes(userRole);
 
   const showToast = (msg: string) => {
@@ -207,28 +216,36 @@ export const BudgetDatabaseView: React.FC<BudgetDatabaseViewProps> = ({
     }
   };
 
-  const handleDeleteSourceAllocation = async (allocId: number, title: string) => {
-    if (!allocatingSource) return;
-    if (!window.confirm(`คุณแน่ใจหรือไม่ว่าต้องการลบงวดจัดสรร "${title}"?\nระบบจะคำนวณหักลบยอดรวมสะสมออกโดยอัตโนมัติ`)) return;
+  const handleDeleteSourceAllocation = (alloc: { id: number; title: string; amount: number; installment_no: number }) => {
+    setAllocationToDelete(alloc);
+  };
+
+  const confirmDeleteSourceAllocation = async () => {
+    if (!allocatingSource || !allocationToDelete) return;
+    setIsDeletingAllocation(true);
     try {
-      const res = await fetch(`/api/budget-sources/${allocatingSource.id}/allocations/${allocId}`, {
+      const res = await fetch(`/api/budget-sources/${allocatingSource.id}/allocations/${allocationToDelete.id}`, {
         method: 'DELETE'
       });
       if (res.ok) {
-        showToast(`ลบงวดจัดสรร "${title}" เรียบร้อยแล้ว`);
+        showToast(`ลบงวดจัดสรร "${allocationToDelete.title}" เรียบร้อยแล้ว`);
+        setAllocationToDelete(null);
         const allocRes = await fetch(`/api/budget-sources/${allocatingSource.id}/allocations`);
         if (allocRes.ok) {
           const data = await safeParseJson<BudgetAllocation[]>(allocRes);
           if (data) setSourceAllocations(data);
         }
         fetchBudgetSources();
+        if (onRefresh) onRefresh();
       } else {
         const errData = await safeParseJson<any>(res);
-        alert(errData?.error || 'ไม่สามารถลบงวดจัดสรรได้');
+        showToast(errData?.error || 'ไม่สามารถลบงวดจัดสรรได้');
       }
     } catch (err) {
       console.error(err);
-      alert('เกิดข้อผิดพลาดในการลบ');
+      showToast('เกิดข้อผิดพลาดในการลบงวดจัดสรร');
+    } finally {
+      setIsDeletingAllocation(false);
     }
   };
 
@@ -483,29 +500,41 @@ export const BudgetDatabaseView: React.FC<BudgetDatabaseViewProps> = ({
     fetchBudgetSources();
   };
 
-  const handleDeleteBudgetSource = async (source: BudgetSource) => {
-    if (!window.confirm(`คุณแน่ใจหรือไม่ว่าต้องการลบแหล่งงบประมาณ "${source.name}"?`)) {
-      return;
-    }
+  const handleDeleteBudgetSource = (source: BudgetSource) => {
+    setDeleteSourceError(null);
+    setSourceToDelete(source);
+  };
+
+  const confirmDeleteBudgetSource = async () => {
+    if (!sourceToDelete) return;
+    setIsDeletingSource(true);
+    setDeleteSourceError(null);
 
     try {
-      const res = await fetch(`/api/budget-sources/${source.id}`, {
+      const res = await fetch(`/api/budget-sources/${sourceToDelete.id}`, {
         method: 'DELETE'
       });
       const data = await safeJson(res);
 
       if (!res.ok) {
         if (res.status === 404 || !res.status) {
-          deleteBudgetSourceLocally(source.id, source.name);
+          deleteBudgetSourceLocally(sourceToDelete.id, sourceToDelete.name);
+          setSourceToDelete(null);
           return;
         }
-        alert(data?.error || 'ไม่สามารถลบแหล่งงบประมาณได้');
+        setDeleteSourceError(data?.error || 'ไม่สามารถลบแหล่งงบประมาณได้');
       } else {
-        showToast(`ลบแหล่งงบประมาณ "${source.name}" สำเร็จ`);
+        deleteBudgetSourceLocally(sourceToDelete.id, sourceToDelete.name);
+        setSourceToDelete(null);
+        showToast(`ลบแหล่งงบประมาณ "${sourceToDelete.name}" สำเร็จ`);
         fetchBudgetSources();
+        if (onRefresh) onRefresh();
       }
-    } catch (err) {
-      deleteBudgetSourceLocally(source.id, source.name);
+    } catch (err: any) {
+      deleteBudgetSourceLocally(sourceToDelete.id, sourceToDelete.name);
+      setSourceToDelete(null);
+    } finally {
+      setIsDeletingSource(false);
     }
   };
 
@@ -1900,7 +1929,12 @@ export const BudgetDatabaseView: React.FC<BudgetDatabaseViewProps> = ({
                                   <td className="px-3 py-3 text-center">
                                     {sourceAllocations.length > 1 && (
                                       <button
-                                        onClick={() => handleDeleteSourceAllocation(alloc.id, alloc.title)}
+                                        onClick={() => handleDeleteSourceAllocation({
+                                          id: alloc.id,
+                                          title: alloc.title,
+                                          amount: Number(alloc.amount) || 0,
+                                          installment_no: alloc.installment_no || 1
+                                        })}
                                         className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-colors"
                                         title="ลบงวดจัดสรรนี้"
                                       >
@@ -1940,6 +1974,168 @@ export const BudgetDatabaseView: React.FC<BudgetDatabaseViewProps> = ({
                   className="px-5 py-2 bg-slate-200 hover:bg-slate-300 text-slate-800 rounded-xl text-xs font-bold transition-colors"
                 >
                   ปิดหน้าต่าง
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+
+        {/* Modal: ยืนยันการลบแหล่งงบประมาณ (In-App Confirm Modal) */}
+        {sourceToDelete && (
+          <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
+            <motion.div
+              initial={{ scale: 0.95, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.95, opacity: 0 }}
+              className="bg-white rounded-3xl max-w-md w-full p-6 shadow-2xl border border-slate-100"
+            >
+              <div className="w-12 h-12 rounded-2xl bg-rose-100 text-rose-600 flex items-center justify-center mx-auto mb-4 shadow-sm">
+                <Trash2 size={24} />
+              </div>
+              <h3 className="text-lg font-bold text-slate-900 text-center mb-1">
+                ยืนยันการลบแหล่งงบประมาณ?
+              </h3>
+              <p className="text-xs text-slate-500 text-center mb-4">
+                คุณกำลังจะลบข้อมูลแหล่งงบประมาณออกจากระบบ การดำเนินการนี้ไม่สามารถย้อนกลับได้
+              </p>
+
+              <div className="bg-slate-50 p-3.5 rounded-2xl border border-slate-100 mb-4 text-xs space-y-2">
+                <div className="flex justify-between items-center">
+                  <span className="text-slate-400">ชื่อแหล่งงบประมาณ:</span>
+                  <span className="font-black text-slate-800 text-sm">{sourceToDelete.name}</span>
+                </div>
+                {sourceToDelete.code && (
+                  <div className="flex justify-between items-center">
+                    <span className="text-slate-400">รหัสแหล่งเงิน:</span>
+                    <span className="font-bold text-slate-700 font-mono">{sourceToDelete.code}</span>
+                  </div>
+                )}
+                <div className="flex justify-between items-center">
+                  <span className="text-slate-400">ปีงบประมาณ:</span>
+                  <span className="font-bold text-slate-700">พ.ศ. {sourceToDelete.fiscal_year || '2568'}</span>
+                </div>
+                <div className="flex justify-between items-center">
+                  <span className="text-slate-400">วงเงินจัดสรรรวม:</span>
+                  <span className="font-black text-red-600">฿{Number(sourceToDelete.total_budget || 0).toLocaleString()}</span>
+                </div>
+                <div className="flex justify-between items-center pt-1 border-t border-slate-200">
+                  <span className="text-slate-400">โครงการที่ผูกอยู่:</span>
+                  <span className={`font-bold px-2 py-0.5 rounded ${
+                    (sourceToDelete.project_count || 0) > 0 ? 'bg-amber-100 text-amber-800' : 'bg-emerald-100 text-emerald-800'
+                  }`}>
+                    {sourceToDelete.project_count || 0} โครงการ
+                  </span>
+                </div>
+              </div>
+
+              {(sourceToDelete.project_count || 0) > 0 && (
+                <div className="bg-amber-50 border border-amber-200 text-amber-800 p-3 rounded-xl text-xs mb-4 flex items-start gap-2">
+                  <AlertCircle size={16} className="text-amber-600 shrink-0 mt-0.5" />
+                  <div>
+                    <span className="font-bold">ไม่สามารถลบได้ในขณะนี้:</span> มี {sourceToDelete.project_count} โครงการที่กำลังผูกกับแหล่งเงินนี้อยู่ กรุณาแก้ไขโครงการหรือเปลี่ยนแหล่งงบประมาณของโครงการเหล่านั้นก่อนทำการลบ
+                  </div>
+                </div>
+              )}
+
+              {deleteSourceError && (
+                <div className="bg-rose-50 border border-rose-200 text-rose-700 p-3 rounded-xl text-xs mb-4 flex items-start gap-2">
+                  <AlertCircle size={16} className="text-rose-600 shrink-0 mt-0.5" />
+                  <div>{deleteSourceError}</div>
+                </div>
+              )}
+
+              <div className="flex gap-3">
+                <button
+                  type="button"
+                  disabled={isDeletingSource}
+                  onClick={() => {
+                    setSourceToDelete(null);
+                    setDeleteSourceError(null);
+                  }}
+                  className="flex-1 py-3 bg-slate-100 text-slate-700 font-bold rounded-xl hover:bg-slate-200 transition-colors text-sm"
+                >
+                  ยกเลิก
+                </button>
+                <button
+                  type="button"
+                  disabled={isDeletingSource || (sourceToDelete.project_count || 0) > 0}
+                  onClick={confirmDeleteBudgetSource}
+                  className="flex-1 py-3 bg-rose-600 text-white font-bold rounded-xl hover:bg-rose-700 transition-colors shadow-lg shadow-rose-200 text-sm disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+                >
+                  {isDeletingSource ? (
+                    <>
+                      <span className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                      กำลังลบ...
+                    </>
+                  ) : (
+                    <>
+                      <Trash2 size={16} />
+                      ยืนยันลบแหล่งงบ
+                    </>
+                  )}
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+
+        {/* Modal: ยืนยันการลบงวดจัดสรร (In-App Confirm Modal) */}
+        {allocationToDelete && (
+          <div className="fixed inset-0 z-[110] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
+            <motion.div
+              initial={{ scale: 0.95, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.95, opacity: 0 }}
+              className="bg-white rounded-3xl max-w-md w-full p-6 shadow-2xl border border-slate-100"
+            >
+              <div className="w-12 h-12 rounded-2xl bg-amber-100 text-amber-700 flex items-center justify-center mx-auto mb-4">
+                <Trash2 size={24} />
+              </div>
+              <h3 className="text-lg font-bold text-slate-900 text-center mb-1">
+                ยืนยันการลบงวดจัดสรรงบประมาณ?
+              </h3>
+              <p className="text-xs text-slate-500 text-center mb-4">
+                ระบบจะคำนวณหักลบยอดรวมสะสมของแหล่งงบประมาณออกโดยอัตโนมัติ
+              </p>
+
+              <div className="bg-slate-50 p-3.5 rounded-2xl border border-slate-100 mb-5 text-xs space-y-2">
+                <div className="flex justify-between items-center">
+                  <span className="text-slate-400">งวดที่:</span>
+                  <span className="font-bold text-slate-700">ครั้งที่ {allocationToDelete.installment_no}</span>
+                </div>
+                <div className="flex justify-between items-center">
+                  <span className="text-slate-400">รายการจัดสรร:</span>
+                  <span className="font-bold text-slate-800">{allocationToDelete.title}</span>
+                </div>
+                <div className="flex justify-between items-center">
+                  <span className="text-slate-400">วงเงินที่หักออก:</span>
+                  <span className="font-black text-rose-600 text-sm">฿{allocationToDelete.amount.toLocaleString()} บาท</span>
+                </div>
+              </div>
+
+              <div className="flex gap-3">
+                <button
+                  type="button"
+                  disabled={isDeletingAllocation}
+                  onClick={() => setAllocationToDelete(null)}
+                  className="flex-1 py-3 bg-slate-100 text-slate-700 font-bold rounded-xl hover:bg-slate-200 transition-colors text-sm"
+                >
+                  ยกเลิก
+                </button>
+                <button
+                  type="button"
+                  disabled={isDeletingAllocation}
+                  onClick={confirmDeleteSourceAllocation}
+                  className="flex-1 py-3 bg-rose-600 text-white font-bold rounded-xl hover:bg-rose-700 transition-colors shadow-lg shadow-rose-200 text-sm disabled:opacity-50 flex items-center justify-center gap-2"
+                >
+                  {isDeletingAllocation ? (
+                    <>
+                      <span className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                      กำลังลบ...
+                    </>
+                  ) : (
+                    'ยืนยันลบงวดนี้'
+                  )}
                 </button>
               </div>
             </motion.div>

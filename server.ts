@@ -10,6 +10,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const db = new Database("procurement.db");
+db.pragma('foreign_keys = ON');
 const upload = multer({ dest: "uploads/" });
 
 // Initialize Database
@@ -2409,20 +2410,28 @@ async function startServer() {
 
   app.delete("/api/budget-sources/:id", (req, res) => {
     try {
-      const source = db.prepare("SELECT name FROM budget_sources WHERE id = ?").get(req.params.id) as any;
-      if (source) {
-        const countRes = db.prepare("SELECT COUNT(*) as count FROM projects WHERE budget_source = ?").get(source.name) as any;
-        if (countRes && countRes.count > 0) {
-          return res.status(400).json({ 
-            error: `ไม่สามารถลบแหล่งงบประมาณ "${source.name}" ได้ เนื่องจากมีโครงการที่ผูกกับแหล่งเงินนี้อยู่ ${countRes.count} โครงการ` 
-          });
-        }
+      const source = db.prepare("SELECT * FROM budget_sources WHERE id = ?").get(req.params.id) as any;
+      if (!source) {
+        return res.status(404).json({ error: "ไม่พบแหล่งงบประมาณที่ต้องการลบ" });
       }
-      db.prepare("DELETE FROM budget_sources WHERE id = ?").run(req.params.id);
-      res.json({ success: true });
-    } catch (err) {
+      
+      const countRes = db.prepare("SELECT COUNT(*) as count FROM projects WHERE budget_source = ?").get(source.name) as any;
+      if (countRes && countRes.count > 0) {
+        return res.status(400).json({ 
+          error: `ไม่สามารถลบแหล่งงบประมาณ "${source.name}" ได้ เนื่องจากมีโครงการที่ผูกกับแหล่งเงินนี้อยู่ ${countRes.count} โครงการ` 
+        });
+      }
+      
+      // Cleanly delete all associated allocations then delete the budget source
+      db.transaction(() => {
+        db.prepare("DELETE FROM budget_source_allocations WHERE budget_source_id = ?").run(req.params.id);
+        db.prepare("DELETE FROM budget_sources WHERE id = ?").run(req.params.id);
+      })();
+
+      res.json({ success: true, message: `ลบแหล่งงบประมาณ "${source.name}" เรียบร้อยแล้ว` });
+    } catch (err: any) {
       console.error("Failed to delete budget source:", err);
-      res.status(500).json({ error: "Failed to delete budget source" });
+      res.status(500).json({ error: err?.message || "Failed to delete budget source" });
     }
   });
 
@@ -2960,23 +2969,31 @@ async function startServer() {
 
   app.delete("/api/expense-categories/:id", (req, res) => {
     try {
-      const cat = db.prepare("SELECT name FROM expense_categories WHERE id = ?").get(req.params.id) as any;
-      if (cat) {
-        const count = db.prepare(`
-          SELECT COUNT(*) as count FROM projects 
-          WHERE (expense_category = ? OR (is_loan = 1 AND loan_expense_category = ?))
-        `).get(cat.name, cat.name) as any;
-        if (count && count.count > 0) {
-          return res.status(400).json({ 
-            error: `ไม่สามารถลบหมวดค่าใช้จ่าย "${cat.name}" ได้ เนื่องจากมี ${count.count} โครงการที่กำลังใช้งานหมวดนี้อยู่` 
-          });
-        }
+      const cat = db.prepare("SELECT * FROM expense_categories WHERE id = ?").get(req.params.id) as any;
+      if (!cat) {
+        return res.status(404).json({ error: "ไม่พบหมวดค่าใช้จ่ายที่ต้องการลบ" });
       }
-      db.prepare("DELETE FROM expense_categories WHERE id = ?").run(req.params.id);
-      res.json({ success: true });
-    } catch (err) {
+      
+      const count = db.prepare(`
+        SELECT COUNT(*) as count FROM projects 
+        WHERE (expense_category = ? OR (is_loan = 1 AND loan_expense_category = ?))
+      `).get(cat.name, cat.name) as any;
+      if (count && count.count > 0) {
+        return res.status(400).json({ 
+          error: `ไม่สามารถลบหมวดค่าใช้จ่าย "${cat.name}" ได้ เนื่องจากมี ${count.count} โครงการที่กำลังใช้งานหมวดนี้อยู่` 
+        });
+      }
+      
+      // Cleanly delete all associated allocations then delete the expense category
+      db.transaction(() => {
+        db.prepare("DELETE FROM expense_category_allocations WHERE category_id = ?").run(req.params.id);
+        db.prepare("DELETE FROM expense_categories WHERE id = ?").run(req.params.id);
+      })();
+
+      res.json({ success: true, message: `ลบหมวดค่าใช้จ่าย "${cat.name}" เรียบร้อยแล้ว` });
+    } catch (err: any) {
       console.error("Error deleting expense category:", err);
-      res.status(500).json({ error: "Failed to delete expense category" });
+      res.status(500).json({ error: err?.message || "Failed to delete expense category" });
     }
   });
 
