@@ -241,5 +241,10 @@ export interface FiscalYear {
   budget_sources_count?: number;
   total_budget?: number;
   expense_categories_count?: number;
+  committed_amount?: number;
+  disbursed_amount?: number;
+  total_used?: number;
+  remaining_budget?: number;
+  used_percentage?: number;
 }
 

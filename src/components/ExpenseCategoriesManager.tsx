@@ -104,6 +104,7 @@ export const ExpenseCategoriesManager: React.FC<ExpenseCategoriesManagerProps> =
   const [categoryToDelete, setCategoryToDelete] = useState<ExpenseCategory | null>(null);
   const [isDeletingCategory, setIsDeletingCategory] = useState(false);
   const [deleteCategoryError, setDeleteCategoryError] = useState<string | null>(null);
+  const [forceDeleteCategory, setForceDeleteCategory] = useState(false);
 
   // Delete Category Allocation In-App Modal
   const [catAllocToDelete, setCatAllocToDelete] = useState<{ id: number; title: string; amount: number; installment_no: number } | null>(null);
@@ -524,6 +525,7 @@ export const ExpenseCategoriesManager: React.FC<ExpenseCategoriesManagerProps> =
   // Delete Category (opens in-app confirmation modal)
   const handleDeleteCategory = (cat: ExpenseCategory) => {
     setDeleteCategoryError(null);
+    setForceDeleteCategory(false);
     setCategoryToDelete(cat);
   };
 
@@ -533,11 +535,13 @@ export const ExpenseCategoriesManager: React.FC<ExpenseCategoriesManagerProps> =
     setDeleteCategoryError(null);
 
     try {
-      const res = await fetch(`/api/expense-categories/${categoryToDelete.id}`, { method: 'DELETE' });
+      const url = `/api/expense-categories/${categoryToDelete.id}${forceDeleteCategory ? '?force=true' : ''}`;
+      const res = await fetch(url, { method: 'DELETE' });
+      const data = await safeJson(res);
       if (res.ok) {
         deleteCategoryLocally(categoryToDelete.id, categoryToDelete.name);
         setCategoryToDelete(null);
-        showToast(`ลบหมวดค่าใช้จ่าย "${categoryToDelete.name}" เรียบร้อยแล้ว`);
+        showToast(data?.message || `ลบหมวดค่าใช้จ่าย "${categoryToDelete.name}" เรียบร้อยแล้ว`);
         fetchCategories();
         if (onRefreshAll) onRefreshAll();
       } else {
@@ -546,7 +550,6 @@ export const ExpenseCategoriesManager: React.FC<ExpenseCategoriesManagerProps> =
           setCategoryToDelete(null);
           return;
         }
-        const data = await safeJson(res);
         setDeleteCategoryError(data?.error || 'ไม่สามารถลบหมวดค่าใช้จ่ายได้');
       }
     } catch (err: any) {
@@ -1865,21 +1868,36 @@ export const ExpenseCategoriesManager: React.FC<ExpenseCategoriesManagerProps> =
                 </div>
               </div>
 
-              {(categoryToDelete.used_amount || 0) > 0 && (
-                <div className="bg-amber-50 border border-amber-200 text-amber-800 p-3 rounded-xl text-xs mb-4 flex items-start gap-2">
-                  <AlertCircle size={16} className="text-amber-600 shrink-0 mt-0.5" />
-                  <div>
-                    <span className="font-bold">คำเตือน:</span> หมวดนี้มีการเบิกจ่ายงบประมาณไปแล้ว ฿{Number(categoryToDelete.used_amount || 0).toLocaleString()} หากมีโครงการกำลังผูกกับหมวดนี้อยู่ ระบบจะไม่อนุญาตให้ลบ
-                  </div>
-                </div>
-              )}
+              {(categoryToDelete.used_amount || 0) > 0 || deleteCategoryError ? (
+                <div className="space-y-3 mb-4">
+                  {deleteCategoryError ? (
+                    <div className="bg-rose-50 border border-rose-200 text-rose-700 p-3 rounded-2xl text-xs flex items-start gap-2.5">
+                      <AlertCircle size={16} className="text-rose-600 shrink-0 mt-0.5" />
+                      <div>{deleteCategoryError}</div>
+                    </div>
+                  ) : (
+                    <div className="bg-amber-50 border border-amber-200 text-amber-800 p-3 rounded-2xl text-xs flex items-start gap-2.5">
+                      <AlertCircle size={16} className="text-amber-600 shrink-0 mt-0.5" />
+                      <div>
+                        <span className="font-bold">หมวดนี้มียอดเบิกจ่ายแล้ว:</span> ฿{Number(categoryToDelete.used_amount || 0).toLocaleString()} หากมีโครงการกำลังผูกกับหมวดนี้ ระบบจะป้องกันไม่ให้เกิดข้อมูลค้าง
+                      </div>
+                    </div>
+                  )}
 
-              {deleteCategoryError && (
-                <div className="bg-rose-50 border border-rose-200 text-rose-700 p-3 rounded-xl text-xs mb-4 flex items-start gap-2">
-                  <AlertCircle size={16} className="text-rose-600 shrink-0 mt-0.5" />
-                  <div>{deleteCategoryError}</div>
+                  <label className="flex items-start gap-2.5 p-3 bg-rose-50/80 border border-rose-200 rounded-2xl cursor-pointer text-xs text-slate-800 select-none hover:bg-rose-50 transition-colors">
+                    <input
+                      type="checkbox"
+                      checked={forceDeleteCategory}
+                      onChange={(e) => setForceDeleteCategory(e.target.checked)}
+                      className="mt-0.5 rounded text-rose-600 focus:ring-rose-500 w-4 h-4 cursor-pointer"
+                    />
+                    <span className="leading-relaxed">
+                      <strong className="block text-rose-800 font-bold mb-0.5">ยืนยันปลดการเชื่อมโยงและลบ</strong>
+                      ฉันต้องการปรับหมวดค่าใช้จ่ายของโครงการที่เกี่ยวข้องทั้งหมดเป็น 'ทั่วไป' และยืนยันลบหมวดนี้ออกจากระบบทันที
+                    </span>
+                  </label>
                 </div>
-              )}
+              ) : null}
 
               <div className="flex gap-3">
                 <button
@@ -1888,6 +1906,7 @@ export const ExpenseCategoriesManager: React.FC<ExpenseCategoriesManagerProps> =
                   onClick={() => {
                     setCategoryToDelete(null);
                     setDeleteCategoryError(null);
+                    setForceDeleteCategory(false);
                   }}
                   className="flex-1 py-3 bg-slate-100 text-slate-700 font-bold rounded-xl hover:bg-slate-200 transition-colors text-sm"
                 >
@@ -1895,9 +1914,9 @@ export const ExpenseCategoriesManager: React.FC<ExpenseCategoriesManagerProps> =
                 </button>
                 <button
                   type="button"
-                  disabled={isDeletingCategory}
+                  disabled={isDeletingCategory || (Boolean(deleteCategoryError) && !forceDeleteCategory)}
                   onClick={confirmDeleteCategory}
-                  className="flex-1 py-3 bg-rose-600 text-white font-bold rounded-xl hover:bg-rose-700 transition-colors shadow-lg shadow-rose-200 text-sm disabled:opacity-50 flex items-center justify-center gap-2"
+                  className="flex-1 py-3 bg-rose-600 text-white font-bold rounded-xl hover:bg-rose-700 transition-colors shadow-lg shadow-rose-200 text-sm disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center gap-2"
                 >
                   {isDeletingCategory ? (
                     <>
@@ -1907,7 +1926,7 @@ export const ExpenseCategoriesManager: React.FC<ExpenseCategoriesManagerProps> =
                   ) : (
                     <>
                       <Trash2 size={16} />
-                      ยืนยันลบหมวดนี้
+                      {forceDeleteCategory ? 'ปลดโครงการและยืนยันลบ' : 'ยืนยันลบหมวดนี้'}
                     </>
                   )}
                 </button>

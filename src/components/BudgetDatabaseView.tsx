@@ -26,7 +26,12 @@ import {
   ShieldCheck,
   History,
   PlusCircle,
-  ArrowRight
+  ArrowRight,
+  Sparkles,
+  Filter,
+  ChevronRight,
+  Grid,
+  ArrowDownRight
 } from 'lucide-react';
 import { BudgetSource, DepartmentBudgetSummary, Project, FiscalYear, BudgetAllocation } from '../types';
 import { ExpenseCategoriesManager } from './ExpenseCategoriesManager';
@@ -39,6 +44,7 @@ interface BudgetDatabaseViewProps {
   onSelectProject?: (project: Project) => void;
   expenseCategories: { id: number; name: string }[];
   onRefreshExpenseCategories?: () => void;
+  onRefresh?: () => void;
 }
 
 const DEFAULT_INITIAL_SOURCES: BudgetSource[] = [
@@ -52,9 +58,10 @@ export const BudgetDatabaseView: React.FC<BudgetDatabaseViewProps> = ({
   userRole,
   onSelectProject,
   expenseCategories,
-  onRefreshExpenseCategories
+  onRefreshExpenseCategories,
+  onRefresh
 }) => {
-  const [sources, setSources] = useState<BudgetSource[]>([]);
+  const [allSources, setAllSources] = useState<BudgetSource[]>([]);
   const [departments, setDepartments] = useState<DepartmentBudgetSummary[]>([]);
   const [fiscalYearList, setFiscalYearList] = useState<FiscalYear[]>([]);
   const [loading, setLoading] = useState(true);
@@ -112,6 +119,7 @@ export const BudgetDatabaseView: React.FC<BudgetDatabaseViewProps> = ({
   const [sourceToDelete, setSourceToDelete] = useState<BudgetSource | null>(null);
   const [isDeletingSource, setIsDeletingSource] = useState(false);
   const [deleteSourceError, setDeleteSourceError] = useState<string | null>(null);
+  const [forceDeleteSource, setForceDeleteSource] = useState(false);
 
   // Delete Allocation In-App Modal
   const [allocationToDelete, setAllocationToDelete] = useState<{ id: number; title: string; amount: number; installment_no: number } | null>(null);
@@ -252,14 +260,11 @@ export const BudgetDatabaseView: React.FC<BudgetDatabaseViewProps> = ({
   const fetchBudgetSources = async () => {
     setLoading(true);
     try {
-      const url = selectedYear === 'all' 
-        ? '/api/budget-sources' 
-        : `/api/budget-sources?fiscal_year=${selectedYear}`;
-      const res = await fetch(url);
+      const res = await fetch('/api/budget-sources');
       if (res.ok) {
         const data = await safeParseJson<BudgetSource[]>(res);
         if (data && Array.isArray(data) && data.length > 0) {
-          setSources(data);
+          setAllSources(data);
           try {
             localStorage.setItem('ttc_smartprocure_budget_sources', JSON.stringify(data));
           } catch (e) {}
@@ -278,20 +283,20 @@ export const BudgetDatabaseView: React.FC<BudgetDatabaseViewProps> = ({
       if (saved) {
         const parsed = JSON.parse(saved);
         if (Array.isArray(parsed) && parsed.length > 0) {
-          const filtered = selectedYear === 'all' 
-            ? parsed 
-            : parsed.filter((s: any) => !s.fiscal_year || s.fiscal_year === selectedYear);
-          setSources(filtered);
+          setAllSources(parsed);
           return;
         }
       }
     } catch (e) {}
-    setSources(selectedYear === 'all' ? DEFAULT_INITIAL_SOURCES : DEFAULT_INITIAL_SOURCES.filter(s => s.fiscal_year === selectedYear));
+    setAllSources(DEFAULT_INITIAL_SOURCES);
   };
 
   const fetchDepartmentsSummary = async () => {
     try {
-      const res = await fetch('/api/budget-departments-summary');
+      const url = selectedYear === 'all'
+        ? '/api/budget-departments-summary'
+        : `/api/budget-departments-summary?fiscal_year=${selectedYear}`;
+      const res = await fetch(url);
       if (res.ok) {
         const data = await safeParseJson<DepartmentBudgetSummary[]>(res);
         if (data) setDepartments(data);
@@ -315,15 +320,24 @@ export const BudgetDatabaseView: React.FC<BudgetDatabaseViewProps> = ({
 
   useEffect(() => {
     fetchBudgetSources();
-    fetchDepartmentsSummary();
     fetchFiscalYearsList();
+  }, []);
+
+  useEffect(() => {
+    fetchDepartmentsSummary();
   }, [selectedYear]);
 
-  // Available Fiscal Years derived from fiscalYearList and sources
+  // Sources filtered by the current selected fiscal year tab
+  const sources = useMemo(() => {
+    if (selectedYear === 'all') return allSources;
+    return allSources.filter(s => (s.fiscal_year || '2568') === selectedYear);
+  }, [allSources, selectedYear]);
+
+  // Available Fiscal Years derived from fiscalYearList and allSources
   const availableYears = useMemo(() => {
     const years = new Set<string>();
     fiscalYearList.forEach(fy => years.add(fy.year));
-    sources.forEach(s => {
+    allSources.forEach(s => {
       if (s.fiscal_year) years.add(s.fiscal_year);
     });
     if (years.size === 0) {
@@ -331,26 +345,58 @@ export const BudgetDatabaseView: React.FC<BudgetDatabaseViewProps> = ({
       years.add('2567');
     }
     return Array.from(years).sort((a, b) => b.localeCompare(a));
-  }, [fiscalYearList, sources]);
+  }, [fiscalYearList, allSources]);
 
-  // Available Categories derived from sources
+  // Available Categories derived from allSources
   const availableCategories = useMemo(() => {
     const cats = new Set<string>();
-    sources.forEach(s => {
+    allSources.forEach(s => {
       if (s.category) cats.add(s.category);
     });
     return Array.from(cats);
-  }, [sources]);
+  }, [allSources]);
 
-  // Overall Financial Calculations
-  const metrics = useMemo(() => {
-    const totalAllocated = sources.reduce((acc, s) => acc + (s.total_budget || 0), 0);
-    const totalCommitted = sources.reduce((acc, s) => acc + (s.committed_amount || 0), 0);
-    const totalDisbursed = sources.reduce((acc, s) => acc + (s.disbursed_amount || 0), 0);
+  // Granular Metrics Per Fiscal Year for Yearly Summary Cards
+  const yearlyMetrics = useMemo(() => {
+    return availableYears.map(year => {
+      const fyObj = fiscalYearList.find(f => f.year === year);
+      const yearSources = allSources.filter(s => (s.fiscal_year || '2568') === year);
+      const totalAllocated = yearSources.reduce((acc, s) => acc + (s.total_budget || 0), 0);
+      const totalCommitted = yearSources.reduce((acc, s) => acc + (s.committed_amount || 0), 0);
+      const totalDisbursed = yearSources.reduce((acc, s) => acc + (s.disbursed_amount || 0), 0);
+      const totalUsed = totalCommitted + totalDisbursed;
+      const remaining = totalAllocated - totalUsed;
+      const usedPercentage = totalAllocated > 0 ? (totalUsed / totalAllocated) * 100 : 0;
+      const projectCount = yearSources.reduce((acc, s) => acc + (s.project_count || 0), 0);
+
+      return {
+        year,
+        isCurrent: fyObj ? Boolean(fyObj.is_current) : year === '2568',
+        status: fyObj?.status || (year === '2568' ? 'active' : 'upcoming'),
+        name: fyObj?.name || `ปีงบประมาณ พ.ศ. ${year}`,
+        description: fyObj?.description,
+        totalAllocated,
+        totalCommitted,
+        totalDisbursed,
+        totalUsed,
+        remaining,
+        usedPercentage: Math.min(100, Math.round(usedPercentage * 10) / 10),
+        sourcesCount: yearSources.length,
+        projectCount,
+        sources: yearSources
+      };
+    });
+  }, [availableYears, fiscalYearList, allSources]);
+
+  // Grand Total Financial Calculations across all fiscal years
+  const grandTotalMetrics = useMemo(() => {
+    const totalAllocated = allSources.reduce((acc, s) => acc + (s.total_budget || 0), 0);
+    const totalCommitted = allSources.reduce((acc, s) => acc + (s.committed_amount || 0), 0);
+    const totalDisbursed = allSources.reduce((acc, s) => acc + (s.disbursed_amount || 0), 0);
     const totalUsed = totalCommitted + totalDisbursed;
     const remaining = totalAllocated - totalUsed;
     const usedPercentage = totalAllocated > 0 ? (totalUsed / totalAllocated) * 100 : 0;
-    const totalProjects = sources.reduce((acc, s) => acc + (s.project_count || 0), 0);
+    const totalProjects = allSources.reduce((acc, s) => acc + (s.project_count || 0), 0);
 
     return {
       totalAllocated,
@@ -359,11 +405,44 @@ export const BudgetDatabaseView: React.FC<BudgetDatabaseViewProps> = ({
       totalUsed,
       remaining,
       usedPercentage: Math.min(100, Math.round(usedPercentage * 10) / 10),
-      totalProjects
+      totalProjects,
+      totalSources: allSources.length
     };
-  }, [sources]);
+  }, [allSources]);
 
-  // Filtered Sources
+  // Active Year Financial Metrics
+  const activeYearMetrics = useMemo(() => {
+    if (selectedYear === 'all') {
+      return {
+        ...grandTotalMetrics,
+        year: 'all',
+        name: 'ทุกปีงบประมาณ',
+        isCurrent: false,
+        status: 'all'
+      };
+    }
+    const found = yearlyMetrics.find(y => y.year === selectedYear);
+    return found || {
+      year: selectedYear,
+      isCurrent: false,
+      status: 'active',
+      name: `ปีงบประมาณ พ.ศ. ${selectedYear}`,
+      totalAllocated: 0,
+      totalCommitted: 0,
+      totalDisbursed: 0,
+      totalUsed: 0,
+      remaining: 0,
+      usedPercentage: 0,
+      sourcesCount: 0,
+      projectCount: 0,
+      sources: []
+    };
+  }, [selectedYear, grandTotalMetrics, yearlyMetrics]);
+
+  // Alias for backward compatibility
+  const metrics = activeYearMetrics;
+
+  // Filtered Sources based on search query
   const filteredSources = useMemo(() => {
     return sources.filter(s => {
       const matchesSearch = 
@@ -374,14 +453,51 @@ export const BudgetDatabaseView: React.FC<BudgetDatabaseViewProps> = ({
     });
   }, [sources, searchQuery]);
 
-  const openAddModal = () => {
+  // Grouped sources by fiscal year for clear separated presentation
+  const groupedSourcesByYear = useMemo(() => {
+    const map = new Map<string, BudgetSource[]>();
+    availableYears.forEach(yr => map.set(yr, []));
+    filteredSources.forEach(s => {
+      const fy = s.fiscal_year || '2568';
+      if (!map.has(fy)) map.set(fy, []);
+      map.get(fy)!.push(s);
+    });
+
+    return Array.from(map.entries())
+      .map(([year, list]) => {
+        const fyObj = fiscalYearList.find(f => f.year === year);
+        const yAllocated = list.reduce((acc, s) => acc + (s.total_budget || 0), 0);
+        const yCommitted = list.reduce((acc, s) => acc + (s.committed_amount || 0), 0);
+        const yDisbursed = list.reduce((acc, s) => acc + (s.disbursed_amount || 0), 0);
+        const yUsed = yCommitted + yDisbursed;
+        const yRemaining = yAllocated - yUsed;
+        const yUsedPct = yAllocated > 0 ? (yUsed / yAllocated) * 100 : 0;
+        return {
+          year,
+          isCurrent: fyObj ? Boolean(fyObj.is_current) : year === '2568',
+          status: fyObj?.status || 'active',
+          name: fyObj?.name || `ปีงบประมาณ พ.ศ. ${year}`,
+          sources: list,
+          totalAllocated: yAllocated,
+          totalCommitted: yCommitted,
+          totalDisbursed: yDisbursed,
+          totalUsed: yUsed,
+          remaining: yRemaining,
+          usedPercentage: Math.min(100, Math.round(yUsedPct * 10) / 10),
+          projectCount: list.reduce((acc, s) => acc + (s.project_count || 0), 0)
+        };
+      })
+      .filter(g => g.sources.length > 0 || (searchQuery === '' && selectedYear === 'all' && allSources.some(s => (s.fiscal_year || '2568') === g.year)));
+  }, [availableYears, filteredSources, fiscalYearList, searchQuery, selectedYear, allSources]);
+
+  const openAddModal = (targetYearOverride?: string) => {
     const curYear = fiscalYearList.find(f => Boolean(f.is_current))?.year || '2568';
-    const targetYear = selectedYear !== 'all' ? selectedYear : curYear;
+    const targetYear = targetYearOverride || (selectedYear !== 'all' ? selectedYear : curYear);
     const yearShort = targetYear.slice(-2);
     setEditingSource(null);
     setFormData({
       name: '',
-      code: `${yearShort}-BG-${String(sources.length + 1).padStart(2, '0')}`,
+      code: `${yearShort}-BG-${String(allSources.length + 1).padStart(2, '0')}`,
       fiscal_year: targetYear,
       total_budget: '',
       category: '',
@@ -502,6 +618,7 @@ export const BudgetDatabaseView: React.FC<BudgetDatabaseViewProps> = ({
 
   const handleDeleteBudgetSource = (source: BudgetSource) => {
     setDeleteSourceError(null);
+    setForceDeleteSource(false);
     setSourceToDelete(source);
   };
 
@@ -511,7 +628,8 @@ export const BudgetDatabaseView: React.FC<BudgetDatabaseViewProps> = ({
     setDeleteSourceError(null);
 
     try {
-      const res = await fetch(`/api/budget-sources/${sourceToDelete.id}`, {
+      const url = `/api/budget-sources/${sourceToDelete.id}${forceDeleteSource ? '?force=true' : ''}`;
+      const res = await fetch(url, {
         method: 'DELETE'
       });
       const data = await safeJson(res);
@@ -526,7 +644,7 @@ export const BudgetDatabaseView: React.FC<BudgetDatabaseViewProps> = ({
       } else {
         deleteBudgetSourceLocally(sourceToDelete.id, sourceToDelete.name);
         setSourceToDelete(null);
-        showToast(`ลบแหล่งงบประมาณ "${sourceToDelete.name}" สำเร็จ`);
+        showToast(data?.message || `ลบแหล่งงบประมาณ "${sourceToDelete.name}" สำเร็จ`);
         fetchBudgetSources();
         if (onRefresh) onRefresh();
       }
@@ -627,6 +745,236 @@ export const BudgetDatabaseView: React.FC<BudgetDatabaseViewProps> = ({
     window.print();
   };
 
+  const renderSourcesTable = (
+    sourceList: BudgetSource[],
+    tableLabel: string,
+    subtotalAllocated: number,
+    subtotalCommitted: number,
+    subtotalDisbursed: number,
+    subtotalRemaining: number
+  ) => {
+    return (
+      <div className="overflow-x-auto">
+        <table className="w-full text-left border-collapse">
+          <thead>
+            <tr className="bg-slate-50/70 text-slate-500 text-[11px] font-bold uppercase tracking-wider border-b border-slate-100">
+              <th className="px-6 py-4">รหัส / แหล่งงบประมาณ</th>
+              <th className="px-4 py-4 text-center">ปีงบประมาณ</th>
+              <th className="px-4 py-4 text-center">งวดจัดสรร (รัฐบาล)</th>
+              <th className="px-4 py-4 text-right">วงเงินจัดสรร</th>
+              <th className="px-4 py-4 text-right">ยอดผูกพัน</th>
+              <th className="px-4 py-4 text-right">เบิกจ่ายแล้ว</th>
+              <th className="px-4 py-4 text-right">คงเหลือสุทธิ</th>
+              <th className="px-6 py-4 text-center">การใช้จ่าย (%)</th>
+              <th className="px-4 py-4 text-center">โครงการ</th>
+              <th className="px-6 py-4 text-center print:hidden">การจัดการ</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-slate-100">
+            {sourceList.length === 0 ? (
+              <tr>
+                <td colSpan={10} className="px-6 py-10 text-center text-slate-400 text-sm">
+                  <div className="flex flex-col items-center justify-center gap-2">
+                    <Landmark size={28} className="text-slate-300 stroke-[1.5]" />
+                    <span>ไม่พบข้อมูลแหล่งงบประมาณ{tableLabel ? ` สำหรับ${tableLabel}` : ''}</span>
+                    {canManage && (
+                      <button
+                        onClick={() => openAddModal(selectedYear !== 'all' ? selectedYear : undefined)}
+                        className="mt-1 text-xs font-bold text-red-700 hover:underline"
+                      >
+                        + เพิ่มแหล่งงบประมาณใหม่
+                      </button>
+                    )}
+                  </div>
+                </td>
+              </tr>
+            ) : (
+              sourceList.map((source) => {
+                const remaining = source.remaining_budget ?? 0;
+                const usedPct = source.used_percentage ?? 0;
+
+                return (
+                  <tr key={source.id} className="hover:bg-slate-50/60 transition-colors">
+                    {/* Name & Code */}
+                    <td className="px-6 py-4">
+                      <div className="flex items-center gap-2">
+                        {source.code && (
+                          <span className="font-mono text-[10px] bg-slate-100 text-slate-600 px-2 py-0.5 rounded font-bold">
+                            {source.code}
+                          </span>
+                        )}
+                        <span className="font-bold text-slate-800 text-sm">{source.name}</span>
+                      </div>
+                      {source.description && (
+                        <p className="text-[11px] text-slate-400 line-clamp-1 mt-0.5">
+                          {source.description}
+                        </p>
+                      )}
+                    </td>
+
+                    {/* Fiscal Year */}
+                    <td className="px-4 py-4 text-center">
+                      <span className="text-xs font-semibold px-2 py-0.5 bg-slate-100 text-slate-700 rounded-lg">
+                        {source.fiscal_year || '2568'}
+                      </span>
+                    </td>
+
+                    {/* Allocation Installments Button */}
+                    <td className="px-4 py-4 text-center">
+                      <button
+                        type="button"
+                        onClick={() => openAllocationsModal(source)}
+                        className="inline-flex items-center gap-1.5 px-3 py-1 bg-amber-50 hover:bg-amber-100 text-amber-800 rounded-lg text-xs font-bold transition-colors border border-amber-200 shadow-sm"
+                        title="คลิกเพื่อดูและเพิ่มงวดจัดสรรงบประมาณ (เพิ่มได้หลายครั้งตามที่รัฐบาลจัดสรรมา)"
+                      >
+                        <Coins size={13} className="text-amber-600" />
+                        จัดสรร {source.allocations_count || 1} ครั้ง
+                        {canManage && <Plus size={11} className="text-amber-700 ml-0.5" />}
+                      </button>
+                    </td>
+
+                    {/* Allocated Budget */}
+                    <td className="px-4 py-4 text-right">
+                      <div className="font-bold text-slate-800 text-sm">
+                        ฿{(source.total_budget || 0).toLocaleString()}
+                      </div>
+                      <div className="flex items-center justify-end gap-1.5 mt-1">
+                        <span className="text-[10px] font-semibold text-slate-500 bg-slate-100 px-1.5 py-0.5 rounded">
+                          จัดสรร {source.allocations_count || 1} ครั้ง
+                        </span>
+                        {canManage && (
+                          <button
+                            onClick={() => openAllocationsModal(source)}
+                            className="text-[10px] font-bold text-red-700 hover:text-red-900 hover:underline flex items-center gap-0.5"
+                            title="เพิ่ม/ดูงวดจัดสรรงบประมาณ"
+                          >
+                            <Plus size={10} />
+                            เพิ่มงวด
+                          </button>
+                        )}
+                      </div>
+                    </td>
+
+                    {/* Committed */}
+                    <td className="px-4 py-4 text-right font-medium text-amber-600 text-sm">
+                      ฿{(source.committed_amount || 0).toLocaleString()}
+                    </td>
+
+                    {/* Disbursed */}
+                    <td className="px-4 py-4 text-right font-medium text-emerald-600 text-sm">
+                      ฿{(source.disbursed_amount || 0).toLocaleString()}
+                    </td>
+
+                    {/* Remaining */}
+                    <td className={`px-4 py-4 text-right font-bold text-sm ${remaining >= 0 ? 'text-indigo-700' : 'text-rose-600'}`}>
+                      ฿{remaining.toLocaleString()}
+                    </td>
+
+                    {/* Usage Progress Bar */}
+                    <td className="px-6 py-4 text-center">
+                      <div className="w-28 mx-auto space-y-1">
+                        <div className="flex justify-between text-[10px] font-bold text-slate-500">
+                          <span>{usedPct}%</span>
+                          <span>{usedPct >= 100 ? 'เต็มวงเงิน' : 'ปกติ'}</span>
+                        </div>
+                        <div className="w-full bg-slate-100 h-2 rounded-full overflow-hidden">
+                          <div
+                            className={`h-full rounded-full transition-all ${
+                              usedPct > 90 ? 'bg-rose-500' : usedPct > 70 ? 'bg-amber-500' : 'bg-emerald-500'
+                            }`}
+                            style={{ width: `${Math.min(100, usedPct)}%` }}
+                          />
+                        </div>
+                      </div>
+                    </td>
+
+                    {/* Project Count */}
+                    <td className="px-4 py-4 text-center">
+                      <button
+                        onClick={() => handleViewProjects(source)}
+                        className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold transition-colors"
+                      >
+                        <span>{source.project_count || 0}</span>
+                        <Eye size={12} />
+                      </button>
+                    </td>
+
+                    {/* Actions */}
+                    <td className="px-6 py-4 text-center print:hidden">
+                      <div className="flex items-center justify-center gap-1.5">
+                        <button
+                          onClick={() => handleViewProjects(source)}
+                          className="p-1.5 text-slate-500 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-colors"
+                          title="ดูโครงการที่ใช้งบนี้"
+                        >
+                          <Eye size={15} />
+                        </button>
+
+                        {canManage && (
+                          <>
+                            <button
+                              onClick={() => openAllocationsModal(source)}
+                              className="p-1.5 text-slate-500 hover:text-red-700 hover:bg-red-50 rounded-lg transition-colors"
+                              title="จัดการงวดจัดสรรงบประมาณ (เพิ่มวงเงินได้หลายครั้ง)"
+                            >
+                              <Coins size={15} />
+                            </button>
+                            <button
+                              onClick={() => openEditModal(source)}
+                              className="p-1.5 text-slate-500 hover:text-amber-600 hover:bg-amber-50 rounded-lg transition-colors"
+                              title="แก้ไขกรอบวงเงิน/รายละเอียด"
+                            >
+                              <Edit2 size={15} />
+                            </button>
+                            <button
+                              onClick={() => handleDeleteBudgetSource(source)}
+                              className="p-1.5 text-slate-500 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-colors"
+                              title="ลบแหล่งงบประมาณ"
+                            >
+                              <Trash2 size={15} />
+                            </button>
+                          </>
+                        )}
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })
+            )}
+          </tbody>
+          {sourceList.length > 0 && (
+            <tfoot>
+              <tr className="bg-slate-50 font-bold text-slate-800 text-xs border-t-2 border-slate-200">
+                <td colSpan={3} className="px-6 py-4 text-slate-700">
+                  รวมงบประมาณ{tableLabel} ({sourceList.length} แหล่งงบประมาณ)
+                </td>
+                <td className="px-4 py-4 text-right">
+                  ฿{subtotalAllocated.toLocaleString()}
+                </td>
+                <td className="px-4 py-4 text-right text-amber-600">
+                  ฿{subtotalCommitted.toLocaleString()}
+                </td>
+                <td className="px-4 py-4 text-right text-emerald-600">
+                  ฿{subtotalDisbursed.toLocaleString()}
+                </td>
+                <td className={`px-4 py-4 text-right font-black ${subtotalRemaining >= 0 ? 'text-indigo-700' : 'text-rose-600'}`}>
+                  ฿{subtotalRemaining.toLocaleString()}
+                </td>
+                <td className="px-6 py-4 text-center text-slate-500">
+                  {subtotalAllocated > 0 ? Math.round(((subtotalCommitted + subtotalDisbursed) / subtotalAllocated) * 1000) / 10 : 0}%
+                </td>
+                <td className="px-4 py-4 text-center text-slate-700">
+                  {sourceList.reduce((a, b) => a + (b.project_count || 0), 0)}
+                </td>
+                <td className="px-6 py-4 print:hidden"></td>
+              </tr>
+            </tfoot>
+          )}
+        </table>
+      </div>
+    );
+  };
+
   return (
     <div className="space-y-6 pb-12">
       {/* Toast Notification */}
@@ -713,76 +1061,349 @@ export const BudgetDatabaseView: React.FC<BudgetDatabaseViewProps> = ({
           </div>
         </div>
 
-        {/* Global Summary Cards */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mt-8 pt-6 border-t border-slate-100">
-          <div className="bg-slate-50/80 rounded-2xl p-4 border border-slate-200/70">
-            <div className="flex items-center justify-between text-slate-500 mb-2">
-              <span className="text-xs font-semibold">วงเงินจัดสรรทั้งหมด</span>
-              <div className="w-8 h-8 rounded-xl bg-blue-100 text-blue-700 flex items-center justify-center">
-                <Coins size={16} />
-              </div>
-            </div>
-            <div className="text-2xl font-black text-slate-800 tracking-tight">
-              ฿{metrics.totalAllocated.toLocaleString()}
-            </div>
-            <div className="text-[11px] text-slate-400 mt-1">
-              จาก {sources.length} แหล่งงบประมาณ
-            </div>
+        {/* Fiscal Year Switcher Bar */}
+        <div className="mt-8 pt-6 border-t border-slate-100 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div className="flex items-center gap-2">
+            <Calendar size={18} className="text-red-700" />
+            <span className="text-xs font-black text-slate-700 uppercase tracking-wider">
+              เลือกปีงบประมาณที่ต้องการแสดง:
+            </span>
           </div>
 
-          <div className="bg-slate-50/80 rounded-2xl p-4 border border-slate-200/70">
-            <div className="flex items-center justify-between text-slate-500 mb-2">
-              <span className="text-xs font-semibold">ยอดผูกพัน / กำลังดำเนินการ</span>
-              <div className="w-8 h-8 rounded-xl bg-amber-100 text-amber-700 flex items-center justify-center">
-                <TrendingUp size={16} />
-              </div>
-            </div>
-            <div className="text-2xl font-black text-amber-600 tracking-tight">
-              ฿{metrics.totalCommitted.toLocaleString()}
-            </div>
-            <div className="text-[11px] text-slate-400 mt-1">
-              โครงการอยู่ระหว่างกระบวนการ A-D
-            </div>
-          </div>
+          <div className="flex flex-wrap items-center gap-1.5 p-1 bg-slate-100/90 rounded-2xl border border-slate-200/80">
+            <button
+              onClick={() => setSelectedYear('all')}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold transition-all ${
+                selectedYear === 'all'
+                  ? 'bg-red-700 text-white shadow-sm'
+                  : 'text-slate-600 hover:text-slate-900 hover:bg-white/80'
+              }`}
+            >
+              <Grid size={13} />
+              ทุกปีงบประมาณ (แยกรายปี)
+              <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-bold ${
+                selectedYear === 'all' ? 'bg-white/20 text-white' : 'bg-slate-200 text-slate-700'
+              }`}>
+                {availableYears.length} ปี
+              </span>
+            </button>
 
-          <div className="bg-slate-50/80 rounded-2xl p-4 border border-slate-200/70">
-            <div className="flex items-center justify-between text-slate-500 mb-2">
-              <span className="text-xs font-semibold">ยอดเบิกจ่ายแล้วเสร็จ</span>
-              <div className="w-8 h-8 rounded-xl bg-emerald-100 text-emerald-700 flex items-center justify-center">
-                <CheckCircle2 size={16} />
-              </div>
-            </div>
-            <div className="text-2xl font-black text-emerald-600 tracking-tight">
-              ฿{metrics.totalDisbursed.toLocaleString()}
-            </div>
-            <div className="text-[11px] text-slate-400 mt-1">
-              โครงการที่สิ้นสุดและเบิกจ่ายเรียบร้อย
-            </div>
-          </div>
+            {availableYears.map(yr => {
+              const fyObj = fiscalYearList.find(f => f.year === yr);
+              const isCurr = fyObj ? Boolean(fyObj.is_current) : yr === '2568';
+              const isClosed = fyObj?.status === 'closed';
+              const isUpcoming = fyObj?.status === 'upcoming';
+              const isSelected = selectedYear === yr;
 
-          <div className="bg-slate-50/80 rounded-2xl p-4 border border-slate-200/70">
-            <div className="flex items-center justify-between text-slate-500 mb-2">
-              <span className="text-xs font-semibold">คงเหลือที่จัดสรรได้</span>
-              <div className="w-8 h-8 rounded-xl bg-indigo-100 text-indigo-700 flex items-center justify-center">
-                <Wallet size={16} />
-              </div>
-            </div>
-            <div className={`text-2xl font-black tracking-tight ${metrics.remaining >= 0 ? 'text-indigo-700' : 'text-rose-600'}`}>
-              ฿{metrics.remaining.toLocaleString()}
-            </div>
-            <div className="flex items-center gap-2 mt-2">
-              <div className="flex-1 bg-slate-200 rounded-full h-1.5 overflow-hidden">
-                <div 
-                  className={`h-full rounded-full ${
-                    metrics.usedPercentage > 90 ? 'bg-rose-500' : metrics.usedPercentage > 70 ? 'bg-amber-500' : 'bg-emerald-500'
+              return (
+                <button
+                  key={yr}
+                  onClick={() => setSelectedYear(yr)}
+                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold transition-all ${
+                    isSelected
+                      ? 'bg-red-700 text-white shadow-sm'
+                      : 'text-slate-600 hover:text-slate-900 hover:bg-white/80'
                   }`}
-                  style={{ width: `${Math.min(100, metrics.usedPercentage)}%` }}
-                />
-              </div>
-              <span className="text-[10px] font-bold text-slate-500">{metrics.usedPercentage}%</span>
-            </div>
+                >
+                  <span>พ.ศ. {yr}</span>
+                  {isCurr && (
+                    <span className={`text-[9px] px-1.5 py-0.5 rounded-md font-black ${
+                      isSelected ? 'bg-white text-red-700' : 'bg-red-100 text-red-700'
+                    }`}>
+                      ปีปัจจุบัน
+                    </span>
+                  )}
+                  {isClosed && (
+                    <span className={`text-[9px] px-1.5 py-0.5 rounded-md font-bold ${
+                      isSelected ? 'bg-white text-slate-700' : 'bg-slate-200 text-slate-600'
+                    }`}>
+                      ปิดรอบ
+                    </span>
+                  )}
+                  {isUpcoming && (
+                    <span className={`text-[9px] px-1.5 py-0.5 rounded-md font-bold ${
+                      isSelected ? 'bg-white text-blue-700' : 'bg-blue-100 text-blue-700'
+                    }`}>
+                      ล่วงหน้า
+                    </span>
+                  )}
+                </button>
+              );
+            })}
           </div>
         </div>
+
+        {/* Budget Summary Cards by Fiscal Year */}
+        {selectedYear === 'all' ? (
+          /* Mode 1: Multi-Year Summary Cards Grid */
+          <div className="mt-5 space-y-4">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <PieChart size={17} className="text-red-700" />
+                <h3 className="text-sm font-black text-slate-800">
+                  การ์ดสรุปงบประมาณแยกตามปีงบประมาณ ({yearlyMetrics.length} ปีงบประมาณ)
+                </h3>
+              </div>
+              <span className="text-xs text-slate-400">
+                คลิก "ดูรายการเฉพาะปีนี้" เพื่อเจาะลึกรายละเอียด
+              </span>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+              {yearlyMetrics.map(ym => {
+                const borderAccent = ym.isCurrent
+                  ? 'border-red-300 ring-2 ring-red-500/15 bg-gradient-to-b from-red-50/40 via-white to-white'
+                  : ym.status === 'upcoming'
+                  ? 'border-blue-200 bg-gradient-to-b from-blue-50/25 via-white to-white'
+                  : 'border-slate-200/90 bg-white';
+
+                return (
+                  <div
+                    key={ym.year}
+                    className={`rounded-2xl p-5 border shadow-sm hover:shadow-md transition-all flex flex-col justify-between relative overflow-hidden group ${borderAccent}`}
+                  >
+                    <div>
+                      {/* Card Header */}
+                      <div className="flex items-start justify-between gap-2 mb-3">
+                        <div>
+                          <div className="flex items-center gap-1.5">
+                            <span className="text-base font-black text-slate-800">
+                              ปีงบประมาณ พ.ศ. {ym.year}
+                            </span>
+                          </div>
+                          <p className="text-[11px] text-slate-400 mt-0.5">
+                            {ym.sourcesCount} แหล่งเงิน • {ym.projectCount} โครงการ
+                          </p>
+                        </div>
+
+                        {ym.isCurrent ? (
+                          <span className="px-2 py-0.5 bg-red-600 text-white rounded-lg text-[10px] font-black uppercase tracking-wider shadow-sm shadow-red-200">
+                            ★ ปีปัจจุบัน
+                          </span>
+                        ) : ym.status === 'closed' ? (
+                          <span className="px-2 py-0.5 bg-slate-100 text-slate-600 rounded-lg text-[10px] font-bold">
+                            ปิดรอบ
+                          </span>
+                        ) : (
+                          <span className="px-2 py-0.5 bg-blue-100 text-blue-700 rounded-lg text-[10px] font-bold">
+                            ล่วงหน้า
+                          </span>
+                        )}
+                      </div>
+
+                      {/* 2x2 Metric Grid */}
+                      <div className="grid grid-cols-2 gap-2 py-3 border-y border-slate-100/90 my-2">
+                        <div className="bg-slate-50/70 p-2.5 rounded-xl border border-slate-100">
+                          <span className="text-[10px] font-bold text-slate-400 block">วงเงินจัดสรร</span>
+                          <span className="text-sm font-black text-slate-800 block truncate" title={`฿${ym.totalAllocated.toLocaleString()}`}>
+                            ฿{ym.totalAllocated.toLocaleString()}
+                          </span>
+                        </div>
+
+                        <div className="bg-slate-50/70 p-2.5 rounded-xl border border-slate-100">
+                          <span className="text-[10px] font-bold text-slate-400 block">คงเหลือสุทธิ</span>
+                          <span className={`text-sm font-black block truncate ${ym.remaining >= 0 ? 'text-indigo-700' : 'text-rose-600'}`} title={`฿${ym.remaining.toLocaleString()}`}>
+                            ฿{ym.remaining.toLocaleString()}
+                          </span>
+                        </div>
+
+                        <div className="p-1.5">
+                          <span className="text-[10px] text-slate-400 block">ผูกพัน/ขอใช้</span>
+                          <span className="text-xs font-bold text-amber-600 block truncate">
+                            ฿{ym.totalCommitted.toLocaleString()}
+                          </span>
+                        </div>
+
+                        <div className="p-1.5">
+                          <span className="text-[10px] text-slate-400 block">เบิกจ่ายแล้ว</span>
+                          <span className="text-xs font-bold text-emerald-600 block truncate">
+                            ฿{ym.totalDisbursed.toLocaleString()}
+                          </span>
+                        </div>
+                      </div>
+
+                      {/* Progress Bar */}
+                      <div className="space-y-1 mt-2">
+                        <div className="flex items-center justify-between text-[11px]">
+                          <span className="text-slate-400 font-medium">การใช้จ่ายงบประมาณ</span>
+                          <span className="font-bold text-slate-700">{ym.usedPercentage}%</span>
+                        </div>
+                        <div className="w-full bg-slate-100 h-2 rounded-full overflow-hidden">
+                          <div
+                            className={`h-full rounded-full transition-all duration-500 ${
+                              ym.usedPercentage > 90 ? 'bg-rose-500' : ym.usedPercentage > 70 ? 'bg-amber-500' : 'bg-emerald-500'
+                            }`}
+                            style={{ width: `${Math.min(100, ym.usedPercentage)}%` }}
+                          />
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Card Actions */}
+                    <div className="pt-3 mt-3 border-t border-slate-100/90 flex items-center justify-between gap-2">
+                      <button
+                        onClick={() => setSelectedYear(ym.year)}
+                        className="inline-flex items-center gap-1 text-xs font-bold text-red-700 hover:text-red-900 transition-colors group-hover:translate-x-0.5 duration-200"
+                      >
+                        ดูรายการเฉพาะปีนี้
+                        <ChevronRight size={14} />
+                      </button>
+
+                      {canManage && (
+                        <button
+                          onClick={() => openAddModal(ym.year)}
+                          className="p-1.5 text-slate-400 hover:text-red-700 hover:bg-red-50 rounded-lg transition-colors"
+                          title={`เพิ่มแหล่งงบประมาณใหม่ในปี พ.ศ. ${ym.year}`}
+                        >
+                          <Plus size={14} />
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* Grand Total Ribbon */}
+            <div className="bg-slate-900 text-white rounded-2xl p-4 flex flex-col md:flex-row md:items-center justify-between gap-4 shadow-sm mt-4">
+              <div className="flex items-center gap-3">
+                <div className="w-9 h-9 rounded-xl bg-red-600 flex items-center justify-center font-bold text-white shadow-md">
+                  <Landmark size={18} />
+                </div>
+                <div>
+                  <span className="text-xs font-black uppercase tracking-wider text-red-400">
+                    สรุปภาพรวมสะสมทุกปีงบประมาณ (Grand Total)
+                  </span>
+                  <p className="text-[11px] text-slate-400">
+                    รวม {grandTotalMetrics.totalSources} แหล่งงบประมาณ ในระบบ
+                  </p>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 text-xs font-bold">
+                <div>
+                  <span className="text-[10px] text-slate-400 block font-normal">วงเงินจัดสรรรวม</span>
+                  <span className="text-sm font-black text-white">
+                    ฿{grandTotalMetrics.totalAllocated.toLocaleString()}
+                  </span>
+                </div>
+                <div>
+                  <span className="text-[10px] text-slate-400 block font-normal">ผูกพันรวม</span>
+                  <span className="text-sm font-bold text-amber-400">
+                    ฿{grandTotalMetrics.totalCommitted.toLocaleString()}
+                  </span>
+                </div>
+                <div>
+                  <span className="text-[10px] text-slate-400 block font-normal">เบิกจ่ายรวม</span>
+                  <span className="text-sm font-bold text-emerald-400">
+                    ฿{grandTotalMetrics.totalDisbursed.toLocaleString()}
+                  </span>
+                </div>
+                <div>
+                  <span className="text-[10px] text-slate-400 block font-normal">คงเหลือสุทธิรวม</span>
+                  <span className={`text-sm font-black ${grandTotalMetrics.remaining >= 0 ? 'text-indigo-300' : 'text-rose-400'}`}>
+                    ฿{grandTotalMetrics.remaining.toLocaleString()}
+                  </span>
+                </div>
+              </div>
+            </div>
+          </div>
+        ) : (
+          /* Mode 2: Single Focused Fiscal Year Summary Cards */
+          <div className="mt-5 space-y-4">
+            <div className="flex items-center justify-between bg-red-50/70 border border-red-100 rounded-2xl px-4 py-2.5">
+              <div className="flex items-center gap-2">
+                <Calendar size={16} className="text-red-700" />
+                <span className="text-xs font-bold text-slate-800">
+                  กำลังแสดงสรุปงบประมาณ: <span className="text-red-700 font-black">ปีงบประมาณ พ.ศ. {selectedYear}</span>
+                  {activeYearMetrics.isCurrent && (
+                    <span className="ml-2 px-2 py-0.5 bg-red-600 text-white rounded-md text-[10px] font-black">
+                      ปีปัจจุบัน
+                    </span>
+                  )}
+                </span>
+              </div>
+
+              <button
+                onClick={() => setSelectedYear('all')}
+                className="inline-flex items-center gap-1.5 px-3 py-1 bg-white hover:bg-slate-100 text-slate-700 rounded-xl text-xs font-bold transition-all border border-slate-200 shadow-sm"
+              >
+                <Grid size={13} />
+                สลับไปดูการ์ดสรุปทุกปีงบประมาณ
+              </button>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+              <div className="bg-slate-50/80 rounded-2xl p-4 border border-slate-200/70">
+                <div className="flex items-center justify-between text-slate-500 mb-2">
+                  <span className="text-xs font-semibold">วงเงินจัดสรรปี {selectedYear}</span>
+                  <div className="w-8 h-8 rounded-xl bg-blue-100 text-blue-700 flex items-center justify-center">
+                    <Coins size={16} />
+                  </div>
+                </div>
+                <div className="text-2xl font-black text-slate-800 tracking-tight">
+                  ฿{activeYearMetrics.totalAllocated.toLocaleString()}
+                </div>
+                <div className="text-[11px] text-slate-400 mt-1">
+                  จาก {activeYearMetrics.sourcesCount} แหล่งงบประมาณ
+                </div>
+              </div>
+
+              <div className="bg-slate-50/80 rounded-2xl p-4 border border-slate-200/70">
+                <div className="flex items-center justify-between text-slate-500 mb-2">
+                  <span className="text-xs font-semibold">ยอดผูกพัน / กำลังดำเนินการ</span>
+                  <div className="w-8 h-8 rounded-xl bg-amber-100 text-amber-700 flex items-center justify-center">
+                    <TrendingUp size={16} />
+                  </div>
+                </div>
+                <div className="text-2xl font-black text-amber-600 tracking-tight">
+                  ฿{activeYearMetrics.totalCommitted.toLocaleString()}
+                </div>
+                <div className="text-[11px] text-slate-400 mt-1">
+                  โครงการอยู่ระหว่างกระบวนการ A-D
+                </div>
+              </div>
+
+              <div className="bg-slate-50/80 rounded-2xl p-4 border border-slate-200/70">
+                <div className="flex items-center justify-between text-slate-500 mb-2">
+                  <span className="text-xs font-semibold">ยอดเบิกจ่ายแล้วเสร็จ</span>
+                  <div className="w-8 h-8 rounded-xl bg-emerald-100 text-emerald-700 flex items-center justify-center">
+                    <CheckCircle2 size={16} />
+                  </div>
+                </div>
+                <div className="text-2xl font-black text-emerald-600 tracking-tight">
+                  ฿{activeYearMetrics.totalDisbursed.toLocaleString()}
+                </div>
+                <div className="text-[11px] text-slate-400 mt-1">
+                  โครงการที่สิ้นสุดและเบิกจ่ายเรียบร้อย
+                </div>
+              </div>
+
+              <div className="bg-slate-50/80 rounded-2xl p-4 border border-slate-200/70">
+                <div className="flex items-center justify-between text-slate-500 mb-2">
+                  <span className="text-xs font-semibold">คงเหลือที่จัดสรรได้</span>
+                  <div className="w-8 h-8 rounded-xl bg-indigo-100 text-indigo-700 flex items-center justify-center">
+                    <Wallet size={16} />
+                  </div>
+                </div>
+                <div className={`text-2xl font-black tracking-tight ${activeYearMetrics.remaining >= 0 ? 'text-indigo-700' : 'text-rose-600'}`}>
+                  ฿{activeYearMetrics.remaining.toLocaleString()}
+                </div>
+                <div className="flex items-center gap-2 mt-2">
+                  <div className="flex-1 bg-slate-200 rounded-full h-1.5 overflow-hidden">
+                    <div 
+                      className={`h-full rounded-full ${
+                        activeYearMetrics.usedPercentage > 90 ? 'bg-rose-500' : activeYearMetrics.usedPercentage > 70 ? 'bg-amber-500' : 'bg-emerald-500'
+                      }`}
+                      style={{ width: `${Math.min(100, activeYearMetrics.usedPercentage)}%` }}
+                    />
+                  </div>
+                  <span className="text-[10px] font-bold text-slate-500">{activeYearMetrics.usedPercentage}%</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Tabs & Controls */}
@@ -879,233 +1500,158 @@ export const BudgetDatabaseView: React.FC<BudgetDatabaseViewProps> = ({
         )}
       </div>
 
-      {/* Tab 1: แหล่งงบประมาณและกรอบวงเงิน (Budget Sources) */}
+      {/* Tab 1: แหล่งงบประมาณและกรอบวงเงิน (Budget Sources separated by Fiscal Year) */}
       {activeTab === 'sources' && (
-        <div className="bg-white rounded-3xl border border-slate-200 shadow-sm overflow-hidden">
-          <div className="p-6 border-b border-slate-100 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-            <div>
-              <h3 className="font-bold text-base text-slate-800">รายการแหล่งงบประมาณและกรอบวงเงิน</h3>
-              <p className="text-xs text-slate-400">
-                แสดงยอดจัดสรร ยอดผูกพัน ยอดเบิกจ่ายจริง และยอดคงเหลือสุทธิ
-              </p>
-            </div>
-            <div className="text-xs font-semibold text-slate-500 bg-slate-50 px-3 py-1.5 rounded-xl border border-slate-100">
-              พบ {filteredSources.length} แหล่งงบประมาณ
-            </div>
-          </div>
-
-          <div className="overflow-x-auto">
-            <table className="w-full text-left border-collapse">
-              <thead>
-                <tr className="bg-slate-50/70 text-slate-500 text-[11px] font-bold uppercase tracking-wider border-b border-slate-100">
-                  <th className="px-6 py-4">รหัส / แหล่งงบประมาณ</th>
-                  <th className="px-4 py-4 text-center">ปีงบประมาณ</th>
-                  <th className="px-4 py-4 text-center">งวดจัดสรร (รัฐบาล)</th>
-                  <th className="px-4 py-4 text-right">วงเงินจัดสรร</th>
-                  <th className="px-4 py-4 text-right">ยอดผูกพัน</th>
-                  <th className="px-4 py-4 text-right">เบิกจ่ายแล้ว</th>
-                  <th className="px-4 py-4 text-right">คงเหลือสุทธิ</th>
-                  <th className="px-6 py-4 text-center">การใช้จ่าย (%)</th>
-                  <th className="px-4 py-4 text-center">โครงการ</th>
-                  <th className="px-6 py-4 text-center print:hidden">การจัดการ</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-100">
-                {filteredSources.length === 0 ? (
-                  <tr>
-                    <td colSpan={10} className="px-6 py-12 text-center text-slate-400 text-sm">
-                      <div className="flex flex-col items-center justify-center gap-2">
-                        <Landmark size={32} className="text-slate-300 stroke-[1.5]" />
-                        <span>ไม่พบข้อมูลแหล่งงบประมาณตามเงื่อนไขที่เลือก</span>
-                        {canManage && (
-                          <button
-                            onClick={openAddModal}
-                            className="mt-2 text-xs font-bold text-red-700 hover:underline"
-                          >
-                            + เพิ่มแหล่งงบประมาณใหม่
-                          </button>
-                        )}
-                      </div>
-                    </td>
-                  </tr>
-                ) : (
-                  filteredSources.map((source) => {
-                    const remaining = source.remaining_budget ?? 0;
-                    const usedPct = source.used_percentage ?? 0;
-
-                    return (
-                      <tr key={source.id} className="hover:bg-slate-50/60 transition-colors">
-                        {/* Name & Code */}
-                        <td className="px-6 py-4">
-                          <div className="flex items-center gap-2">
-                            {source.code && (
-                              <span className="font-mono text-[10px] bg-slate-100 text-slate-600 px-2 py-0.5 rounded font-bold">
-                                {source.code}
-                              </span>
-                            )}
-                            <span className="font-bold text-slate-800 text-sm">{source.name}</span>
-                          </div>
-                          {source.description && (
-                            <p className="text-[11px] text-slate-400 line-clamp-1 mt-0.5">
-                              {source.description}
-                            </p>
-                          )}
-                        </td>
-
-                        {/* Fiscal Year */}
-                        <td className="px-4 py-4 text-center">
-                          <span className="text-xs font-semibold px-2 py-0.5 bg-slate-100 text-slate-700 rounded-lg">
-                            {source.fiscal_year || '2568'}
-                          </span>
-                        </td>
-
-                        {/* Allocation Installments Button */}
-                        <td className="px-4 py-4 text-center">
-                          <button
-                            type="button"
-                            onClick={() => openAllocationsModal(source)}
-                            className="inline-flex items-center gap-1.5 px-3 py-1 bg-amber-50 hover:bg-amber-100 text-amber-800 rounded-lg text-xs font-bold transition-colors border border-amber-200 shadow-sm"
-                            title="คลิกเพื่อดูและเพิ่มงวดจัดสรรงบประมาณ (เพิ่มได้หลายครั้งตามที่รัฐบาลจัดสรรมา)"
-                          >
-                            <Coins size={13} className="text-amber-600" />
-                            จัดสรร {source.allocations_count || 1} ครั้ง
-                            {canManage && <Plus size={11} className="text-amber-700 ml-0.5" />}
-                          </button>
-                        </td>
-
-                        {/* Allocated Budget */}
-                        <td className="px-4 py-4 text-right">
-                          <div className="font-bold text-slate-800 text-sm">
-                            ฿{(source.total_budget || 0).toLocaleString()}
-                          </div>
-                          <div className="flex items-center justify-end gap-1.5 mt-1">
-                            <span className="text-[10px] font-semibold text-slate-500 bg-slate-100 px-1.5 py-0.5 rounded">
-                              จัดสรร {source.allocations_count || 1} ครั้ง
-                            </span>
-                            {canManage && (
-                              <button
-                                onClick={() => openAllocationsModal(source)}
-                                className="text-[10px] font-bold text-red-700 hover:text-red-900 hover:underline flex items-center gap-0.5"
-                                title="เพิ่ม/ดูงวดจัดสรรงบประมาณ"
-                              >
-                                <Plus size={10} />
-                                เพิ่มงวด
-                              </button>
-                            )}
-                          </div>
-                        </td>
-
-                        {/* Committed */}
-                        <td className="px-4 py-4 text-right font-medium text-amber-600 text-sm">
-                          ฿{(source.committed_amount || 0).toLocaleString()}
-                        </td>
-
-                        {/* Disbursed */}
-                        <td className="px-4 py-4 text-right font-medium text-emerald-600 text-sm">
-                          ฿{(source.disbursed_amount || 0).toLocaleString()}
-                        </td>
-
-                        {/* Remaining */}
-                        <td className={`px-4 py-4 text-right font-bold text-sm ${remaining >= 0 ? 'text-indigo-700' : 'text-rose-600'}`}>
-                          ฿{remaining.toLocaleString()}
-                        </td>
-
-                        {/* Usage Progress Bar */}
-                        <td className="px-6 py-4 text-center">
-                          <div className="w-28 mx-auto space-y-1">
-                            <div className="flex justify-between text-[10px] font-bold text-slate-500">
-                              <span>{usedPct}%</span>
-                              <span>{usedPct >= 100 ? 'เต็มวงเงิน' : 'ปกติ'}</span>
-                            </div>
-                            <div className="w-full bg-slate-100 h-2 rounded-full overflow-hidden">
-                              <div
-                                className={`h-full rounded-full transition-all ${
-                                  usedPct > 90 ? 'bg-rose-500' : usedPct > 70 ? 'bg-amber-500' : 'bg-emerald-500'
-                                }`}
-                                style={{ width: `${Math.min(100, usedPct)}%` }}
-                              />
-                            </div>
-                          </div>
-                        </td>
-
-                        {/* Project Count */}
-                        <td className="px-4 py-4 text-center">
-                          <button
-                            onClick={() => handleViewProjects(source)}
-                            className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold transition-colors"
-                          >
-                            <span>{source.project_count || 0}</span>
-                            <Eye size={12} />
-                          </button>
-                        </td>
-
-                        {/* Actions */}
-                        <td className="px-6 py-4 text-center print:hidden">
-                          <div className="flex items-center justify-center gap-1.5">
-                            <button
-                              onClick={() => handleViewProjects(source)}
-                              className="p-1.5 text-slate-500 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-colors"
-                              title="ดูโครงการที่ใช้งบนี้"
-                            >
-                              <Eye size={15} />
-                            </button>
-
-                            {canManage && (
-                              <>
-                                <button
-                                  onClick={() => openAllocationsModal(source)}
-                                  className="p-1.5 text-slate-500 hover:text-red-700 hover:bg-red-50 rounded-lg transition-colors"
-                                  title="จัดการงวดจัดสรรงบประมาณ (เพิ่มวงเงินได้หลายครั้ง)"
-                                >
-                                  <Coins size={15} />
-                                </button>
-                                <button
-                                  onClick={() => openEditModal(source)}
-                                  className="p-1.5 text-slate-500 hover:text-amber-600 hover:bg-amber-50 rounded-lg transition-colors"
-                                  title="แก้ไขกรอบวงเงิน/รายละเอียด"
-                                >
-                                  <Edit2 size={15} />
-                                </button>
-                                <button
-                                  onClick={() => handleDeleteBudgetSource(source)}
-                                  className="p-1.5 text-slate-500 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-colors"
-                                  title="ลบแหล่งงบประมาณ"
-                                >
-                                  <Trash2 size={15} />
-                                </button>
-                              </>
-                            )}
-                          </div>
-                        </td>
-                      </tr>
-                    );
-                  })
+        <div className="space-y-6">
+          {selectedYear === 'all' ? (
+            /* Mode 1: Display Grouped and Separated by Fiscal Year */
+            groupedSourcesByYear.length === 0 ? (
+              <div className="bg-white rounded-3xl border border-slate-200 p-12 text-center text-slate-400 shadow-sm">
+                <Landmark size={36} className="text-slate-300 stroke-[1.5] mx-auto mb-2" />
+                <p className="text-sm font-medium">ไม่พบข้อมูลแหล่งงบประมาณตามคำค้นหา "{searchQuery}"</p>
+                {canManage && (
+                  <button
+                    onClick={() => openAddModal()}
+                    className="mt-3 inline-flex items-center gap-1.5 px-4 py-2 bg-red-700 hover:bg-red-800 text-white rounded-xl font-bold text-xs shadow-sm transition-all"
+                  >
+                    <Plus size={14} />
+                    เพิ่มแหล่งงบประมาณใหม่
+                  </button>
                 )}
-              </tbody>
-              {filteredSources.length > 0 && (
-                <tfoot>
-                  <tr className="bg-slate-50 font-bold text-slate-800 text-xs border-t-2 border-slate-200">
-                    <td colSpan={3} className="px-6 py-4 text-slate-700">
-                      รวมทั้งสิ้น ({filteredSources.length} แหล่งงบประมาณ)
-                    </td>
-                    <td className="px-4 py-4 text-right">
-                      ฿{filteredSources.reduce((a, b) => a + (b.total_budget || 0), 0).toLocaleString()}
-                    </td>
-                    <td className="px-4 py-4 text-right text-amber-600">
-                      ฿{filteredSources.reduce((a, b) => a + (b.committed_amount || 0), 0).toLocaleString()}
-                    </td>
-                    <td className="px-4 py-4 text-right text-emerald-600">
-                      ฿{filteredSources.reduce((a, b) => a + (b.disbursed_amount || 0), 0).toLocaleString()}
-                    </td>
-                    <td className="px-4 py-4 text-right text-indigo-700">
-                      ฿{filteredSources.reduce((a, b) => a + (b.remaining_budget || 0), 0).toLocaleString()}
-                    </td>
-                    <td colSpan={3} className="px-6 py-4"></td>
-                  </tr>
-                </tfoot>
+              </div>
+            ) : (
+              groupedSourcesByYear.map(group => (
+                <div key={group.year} className="bg-white rounded-3xl border border-slate-200 shadow-sm overflow-hidden">
+                  {/* Fiscal Year Section Header Bar */}
+                  <div className="p-5 bg-gradient-to-r from-slate-50 via-white to-slate-50/50 border-b border-slate-100 flex flex-col md:flex-row md:items-center justify-between gap-4">
+                    <div className="flex items-center gap-3">
+                      <div className={`w-10 h-10 rounded-xl flex items-center justify-center font-bold ${
+                        group.isCurrent ? 'bg-red-700 text-white shadow-md shadow-red-100' : 'bg-slate-200 text-slate-700'
+                      }`}>
+                        <Calendar size={18} />
+                      </div>
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <h3 className="font-black text-base text-slate-800">
+                            ปีงบประมาณ พ.ศ. {group.year}
+                          </h3>
+                          {group.isCurrent && (
+                            <span className="px-2.5 py-0.5 bg-red-100 text-red-700 rounded-full text-[10px] font-black">
+                              ★ ปีปัจจุบัน
+                            </span>
+                          )}
+                          {group.status === 'closed' && (
+                            <span className="px-2.5 py-0.5 bg-slate-100 text-slate-600 rounded-full text-[10px] font-bold">
+                              ปิดรอบงบประมาณ
+                            </span>
+                          )}
+                          {group.status === 'upcoming' && (
+                            <span className="px-2.5 py-0.5 bg-blue-100 text-blue-700 rounded-full text-[10px] font-bold">
+                              ปีล่วงหน้า
+                            </span>
+                          )}
+                        </div>
+                        <p className="text-xs text-slate-400 mt-0.5">
+                          {group.sources.length} แหล่งงบประมาณ • {group.projectCount} โครงการที่ผูกพัน
+                        </p>
+                      </div>
+                    </div>
+
+                    {/* Summary Quick Stats Pill & Add Button */}
+                    <div className="flex flex-wrap items-center gap-3 text-xs">
+                      <div className="flex items-center gap-3 bg-white px-3.5 py-1.5 rounded-xl border border-slate-200 shadow-xs">
+                        <div>
+                          <span className="text-[10px] text-slate-400 block font-medium">วงเงินจัดสรร</span>
+                          <span className="font-black text-slate-800">฿{group.totalAllocated.toLocaleString()}</span>
+                        </div>
+                        <div className="h-6 w-px bg-slate-200" />
+                        <div>
+                          <span className="text-[10px] text-slate-400 block font-medium">ผูกพัน</span>
+                          <span className="font-bold text-amber-600">฿{group.totalCommitted.toLocaleString()}</span>
+                        </div>
+                        <div className="h-6 w-px bg-slate-200" />
+                        <div>
+                          <span className="text-[10px] text-slate-400 block font-medium">เบิกจ่าย</span>
+                          <span className="font-bold text-emerald-600">฿{group.totalDisbursed.toLocaleString()}</span>
+                        </div>
+                        <div className="h-6 w-px bg-slate-200" />
+                        <div>
+                          <span className="text-[10px] text-slate-400 block font-medium">คงเหลือ</span>
+                          <span className={`font-black ${group.remaining >= 0 ? 'text-indigo-700' : 'text-rose-600'}`}>
+                            ฿{group.remaining.toLocaleString()}
+                          </span>
+                        </div>
+                      </div>
+
+                      {canManage && (
+                        <button
+                          onClick={() => openAddModal(group.year)}
+                          className="flex items-center gap-1.5 px-3 py-1.5 bg-red-700 hover:bg-red-800 text-white rounded-xl font-bold text-xs shadow-sm transition-all"
+                        >
+                          <Plus size={14} />
+                          เพิ่มแหล่งงบปี {group.year}
+                        </button>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Sources Table for this Fiscal Year */}
+                  {renderSourcesTable(
+                    group.sources,
+                    `ประจำปี พ.ศ. ${group.year}`,
+                    group.totalAllocated,
+                    group.totalCommitted,
+                    group.totalDisbursed,
+                    group.remaining
+                  )}
+                </div>
+              ))
+            )
+          ) : (
+            /* Mode 2: Display Focused for Single Fiscal Year */
+            <div className="bg-white rounded-3xl border border-slate-200 shadow-sm overflow-hidden">
+              <div className="p-6 border-b border-slate-100 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                <div>
+                  <div className="flex items-center gap-2">
+                    <h3 className="font-bold text-base text-slate-800">
+                      รายการแหล่งงบประมาณ ประจำปีงบประมาณ พ.ศ. {selectedYear}
+                    </h3>
+                    {activeYearMetrics.isCurrent && (
+                      <span className="px-2.5 py-0.5 bg-red-100 text-red-700 rounded-full text-xs font-bold">
+                        ★ ปีปัจจุบัน
+                      </span>
+                    )}
+                  </div>
+                  <p className="text-xs text-slate-400 mt-0.5">
+                    แสดงยอดจัดสรร ยอดผูกพัน ยอดเบิกจ่ายจริง และยอดคงเหลือสุทธิ
+                  </p>
+                </div>
+                <div className="flex items-center gap-2">
+                  <div className="text-xs font-semibold text-slate-500 bg-slate-50 px-3 py-1.5 rounded-xl border border-slate-100">
+                    พบ {filteredSources.length} แหล่งงบประมาณ
+                  </div>
+                  {canManage && (
+                    <button
+                      onClick={() => openAddModal(selectedYear)}
+                      className="flex items-center gap-1.5 px-3.5 py-1.5 bg-red-700 hover:bg-red-800 text-white rounded-xl font-bold text-xs shadow-sm transition-all"
+                    >
+                      <Plus size={14} />
+                      เพิ่มแหล่งงบปี {selectedYear}
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {renderSourcesTable(
+                filteredSources,
+                `ประจำปี พ.ศ. ${selectedYear}`,
+                activeYearMetrics.totalAllocated,
+                activeYearMetrics.totalCommitted,
+                activeYearMetrics.totalDisbursed,
+                activeYearMetrics.remaining
               )}
-            </table>
-          </div>
+            </div>
+          )}
         </div>
       )}
 
@@ -2028,14 +2574,43 @@ export const BudgetDatabaseView: React.FC<BudgetDatabaseViewProps> = ({
                 </div>
               </div>
 
-              {(sourceToDelete.project_count || 0) > 0 && (
-                <div className="bg-amber-50 border border-amber-200 text-amber-800 p-3 rounded-xl text-xs mb-4 flex items-start gap-2">
-                  <AlertCircle size={16} className="text-amber-600 shrink-0 mt-0.5" />
-                  <div>
-                    <span className="font-bold">ไม่สามารถลบได้ในขณะนี้:</span> มี {sourceToDelete.project_count} โครงการที่กำลังผูกกับแหล่งเงินนี้อยู่ กรุณาแก้ไขโครงการหรือเปลี่ยนแหล่งงบประมาณของโครงการเหล่านั้นก่อนทำการลบ
+              {(sourceToDelete.project_count || 0) > 0 ? (
+                <div className="space-y-3 mb-4">
+                  <div className="bg-amber-50 border border-amber-200 text-amber-800 p-3 rounded-2xl text-xs flex items-start gap-2.5">
+                    <AlertCircle size={16} className="text-amber-600 shrink-0 mt-0.5" />
+                    <div className="space-y-1.5 flex-1">
+                      <div>
+                        <span className="font-bold">มีโครงการที่ผูกอยู่:</span> พบ {sourceToDelete.project_count} โครงการที่ใช้งานแหล่งเงินนี้อยู่
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const s = sourceToDelete;
+                          setSourceToDelete(null);
+                          handleViewProjects(s);
+                        }}
+                        className="inline-flex items-center gap-1 text-xs font-bold text-amber-800 underline hover:text-amber-950"
+                      >
+                        <Eye size={13} />
+                        คลิกดูรายชื่อ {sourceToDelete.project_count} โครงการที่ผูกอยู่
+                      </button>
+                    </div>
                   </div>
+
+                  <label className="flex items-start gap-2.5 p-3 bg-rose-50/80 border border-rose-200 rounded-2xl cursor-pointer text-xs text-slate-800 select-none hover:bg-rose-50 transition-colors">
+                    <input
+                      type="checkbox"
+                      checked={forceDeleteSource}
+                      onChange={(e) => setForceDeleteSource(e.target.checked)}
+                      className="mt-0.5 rounded text-rose-600 focus:ring-rose-500 w-4 h-4 cursor-pointer"
+                    />
+                    <span className="leading-relaxed">
+                      <strong className="block text-rose-800 font-bold mb-0.5">ยืนยันปลดการเชื่อมโยงและลบ</strong>
+                      ฉันต้องการปลดการผูกของทั้ง {sourceToDelete.project_count} โครงการ (ปรับแหล่งเงินเป็น 'ไม่ระบุ') และยืนยันลบแหล่งงบประมาณนี้ออกจากระบบทันที
+                    </span>
+                  </label>
                 </div>
-              )}
+              ) : null}
 
               {deleteSourceError && (
                 <div className="bg-rose-50 border border-rose-200 text-rose-700 p-3 rounded-xl text-xs mb-4 flex items-start gap-2">
@@ -2051,6 +2626,7 @@ export const BudgetDatabaseView: React.FC<BudgetDatabaseViewProps> = ({
                   onClick={() => {
                     setSourceToDelete(null);
                     setDeleteSourceError(null);
+                    setForceDeleteSource(false);
                   }}
                   className="flex-1 py-3 bg-slate-100 text-slate-700 font-bold rounded-xl hover:bg-slate-200 transition-colors text-sm"
                 >
@@ -2058,7 +2634,7 @@ export const BudgetDatabaseView: React.FC<BudgetDatabaseViewProps> = ({
                 </button>
                 <button
                   type="button"
-                  disabled={isDeletingSource || (sourceToDelete.project_count || 0) > 0}
+                  disabled={isDeletingSource || ((sourceToDelete.project_count || 0) > 0 && !forceDeleteSource)}
                   onClick={confirmDeleteBudgetSource}
                   className="flex-1 py-3 bg-rose-600 text-white font-bold rounded-xl hover:bg-rose-700 transition-colors shadow-lg shadow-rose-200 text-sm disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center gap-2"
                 >
@@ -2070,7 +2646,9 @@ export const BudgetDatabaseView: React.FC<BudgetDatabaseViewProps> = ({
                   ) : (
                     <>
                       <Trash2 size={16} />
-                      ยืนยันลบแหล่งงบ
+                      {(sourceToDelete.project_count || 0) > 0 && forceDeleteSource
+                        ? 'ปลดโครงการและยืนยันลบ'
+                        : 'ยืนยันลบแหล่งงบ'}
                     </>
                   )}
                 </button>

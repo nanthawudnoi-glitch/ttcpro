@@ -357,13 +357,12 @@ if (approverCount.count === 0) {
 }
 
 // Seed initial fiscal years if empty
-const fiscalYearCount = db.prepare("SELECT COUNT(*) as count FROM fiscal_years").get() as any;
-if (fiscalYearCount.count === 0) {
-  const insertFY = db.prepare("INSERT INTO fiscal_years (year, name, is_current, status, description, start_date, end_date) VALUES (?, ?, ?, ?, ?, ?, ?)");
-  insertFY.run('2568', 'ปีงบประมาณ พ.ศ. 2568', 1, 'active', 'ปีงบประมาณปัจจุบัน (1 ต.ค. 2567 - 30 ก.ย. 2568)', '2567-10-01', '2568-09-30');
-  insertFY.run('2567', 'ปีงบประมาณ พ.ศ. 2567', 0, 'closed', 'ปีงบประมาณที่ผ่านมา ปิดรอบงบประมาณแล้ว', '2566-10-01', '2567-09-30');
-  insertFY.run('2569', 'ปีงบประมาณ พ.ศ. 2569', 0, 'upcoming', 'ปีงบประมาณล่วงหน้า เตรียมการจัดทำคำของบประมาณ', '2568-10-01', '2569-09-30');
-}
+// Seed initial fiscal years
+const insertFY = db.prepare("INSERT OR IGNORE INTO fiscal_years (year, name, is_current, status, description, start_date, end_date) VALUES (?, ?, ?, ?, ?, ?, ?)");
+insertFY.run('2568', 'ปีงบประมาณ พ.ศ. 2568', 1, 'active', 'ปีงบประมาณ พ.ศ. 2568 (1 ต.ค. 2567 - 30 ก.ย. 2568)', '2567-10-01', '2568-09-30');
+insertFY.run('2569', 'ปีงบประมาณ พ.ศ. 2569', 0, 'upcoming', 'ปีงบประมาณล่วงหน้า เตรียมการจัดทำคำของบประมาณ', '2568-10-01', '2569-09-30');
+insertFY.run('2570', 'ปีงบประมาณ พ.ศ. 2570', 0, 'upcoming', 'ปีงบประมาณ พ.ศ. 2570', '2026-10-01', '2027-09-30');
+insertFY.run('2567', 'ปีงบประมาณ พ.ศ. 2567', 0, 'closed', 'ปีงบประมาณที่ผ่านมา ปิดรอบงบประมาณแล้ว', '2566-10-01', '2567-09-30');
 
 // Migration: Add email column to users
 try { db.exec("ALTER TABLE users ADD COLUMN email TEXT"); } catch (e) {}
@@ -1642,11 +1641,42 @@ async function startServer() {
           (SELECT COUNT(*) FROM budget_sources WHERE fiscal_year = fy.year) as budget_sources_count,
           (SELECT COALESCE(SUM(total_budget), 0) FROM budget_sources WHERE fiscal_year = fy.year) as total_budget,
           (SELECT COUNT(*) FROM expense_categories WHERE fiscal_year = fy.year) as expense_categories_count,
-          (SELECT COUNT(*) FROM projects WHERE fiscal_year = fy.year) as project_count
+          (SELECT COUNT(*) FROM projects WHERE fiscal_year = fy.year) as project_count,
+          COALESCE((
+            SELECT SUM(p.budget_amount) 
+            FROM projects p 
+            JOIN budget_sources bs ON p.budget_source = bs.name 
+            WHERE bs.fiscal_year = fy.year 
+              AND p.status != 'completed' 
+              AND NOT (p.is_loan = 1 AND p.current_process = 'D' AND p.current_step = 26)
+          ), 0) as committed_amount,
+          COALESCE((
+            SELECT SUM(p.budget_amount) 
+            FROM projects p 
+            JOIN budget_sources bs ON p.budget_source = bs.name 
+            WHERE bs.fiscal_year = fy.year 
+              AND (p.status = 'completed' OR (p.is_loan = 1 AND p.current_process = 'D' AND p.current_step = 26))
+          ), 0) as disbursed_amount
         FROM fiscal_years fy
         ORDER BY fy.year DESC
       `;
-      const fiscalYears = db.prepare(sql).all();
+      const fiscalYears = db.prepare(sql).all().map((fy: any) => {
+        const total_budget = Number(fy.total_budget) || 0;
+        const committed_amount = Number(fy.committed_amount) || 0;
+        const disbursed_amount = Number(fy.disbursed_amount) || 0;
+        const total_used = committed_amount + disbursed_amount;
+        const remaining_budget = total_budget - total_used;
+        const used_percentage = total_budget > 0 ? (total_used / total_budget) * 100 : 0;
+        return {
+          ...fy,
+          total_budget,
+          committed_amount,
+          disbursed_amount,
+          total_used,
+          remaining_budget,
+          used_percentage: Math.min(100, Math.round(used_percentage * 10) / 10)
+        };
+      });
       res.json(fiscalYears);
     } catch (err) {
       console.error("Error fetching fiscal years:", err);
@@ -2132,7 +2162,7 @@ async function startServer() {
           COALESCE(SUM(CASE WHEN p.id IS NOT NULL AND (p.status = 'completed' OR (p.is_loan = 1 AND p.current_process = 'D' AND p.current_step = 26)) THEN p.budget_amount ELSE 0 END), 0) as disbursed_amount,
           COUNT(DISTINCT p.id) as project_count
         FROM budget_sources bs
-        LEFT JOIN projects p ON p.budget_source = bs.name
+        LEFT JOIN projects p ON p.budget_source = bs.name AND (p.fiscal_year IS NULL OR p.fiscal_year = '' OR p.fiscal_year = bs.fiscal_year)
       `;
       const params: any[] = [];
       if (fiscal_year && fiscal_year !== 'all') {
@@ -2415,20 +2445,31 @@ async function startServer() {
         return res.status(404).json({ error: "ไม่พบแหล่งงบประมาณที่ต้องการลบ" });
       }
       
+      const isForce = req.query.force === 'true';
       const countRes = db.prepare("SELECT COUNT(*) as count FROM projects WHERE budget_source = ?").get(source.name) as any;
-      if (countRes && countRes.count > 0) {
+      const linkedCount = countRes?.count || 0;
+
+      if (linkedCount > 0 && !isForce) {
         return res.status(400).json({ 
-          error: `ไม่สามารถลบแหล่งงบประมาณ "${source.name}" ได้ เนื่องจากมีโครงการที่ผูกกับแหล่งเงินนี้อยู่ ${countRes.count} โครงการ` 
+          error: `ไม่สามารถลบแหล่งงบประมาณ "${source.name}" ได้ เนื่องจากมีโครงการที่ผูกกับแหล่งเงินนี้อยู่ ${linkedCount} โครงการ`,
+          hasLinkedProjects: true,
+          linkedCount
         });
       }
       
-      // Cleanly delete all associated allocations then delete the budget source
+      // Cleanly unassign projects if force=true, delete all associated allocations, then delete the budget source
       db.transaction(() => {
+        if (isForce && linkedCount > 0) {
+          db.prepare("UPDATE projects SET budget_source = 'ไม่ระบุ' WHERE budget_source = ?").run(source.name);
+        }
         db.prepare("DELETE FROM budget_source_allocations WHERE budget_source_id = ?").run(req.params.id);
         db.prepare("DELETE FROM budget_sources WHERE id = ?").run(req.params.id);
       })();
 
-      res.json({ success: true, message: `ลบแหล่งงบประมาณ "${source.name}" เรียบร้อยแล้ว` });
+      res.json({ 
+        success: true, 
+        message: `ลบแหล่งงบประมาณ "${source.name}" เรียบร้อยแล้ว${isForce && linkedCount > 0 ? ` (และปลดการผูก ${linkedCount} โครงการเป็น 'ไม่ระบุ')` : ''}` 
+      });
     } catch (err: any) {
       console.error("Failed to delete budget source:", err);
       res.status(500).json({ error: err?.message || "Failed to delete budget source" });
@@ -2459,7 +2500,7 @@ async function startServer() {
   app.get("/api/budget-departments-summary", (req, res) => {
     try {
       const { fiscal_year } = req.query;
-      const departments = db.prepare(`
+      let sql = `
         SELECT 
           p.department,
           COUNT(p.id) as project_count,
@@ -2470,9 +2511,14 @@ async function startServer() {
           COUNT(CASE WHEN p.status != 'completed' AND NOT (p.is_loan = 1 AND p.current_process = 'D' AND p.current_step = 26) THEN 1 END) as pending_count
         FROM projects p
         WHERE p.department IS NOT NULL AND p.department != ''
-        GROUP BY p.department
-        ORDER BY total_requested DESC
-      `).all();
+      `;
+      const params: any[] = [];
+      if (fiscal_year && fiscal_year !== 'all') {
+        sql += ` AND (p.fiscal_year = ? OR (p.fiscal_year IS NULL AND ? = '2568'))`;
+        params.push(fiscal_year, fiscal_year);
+      }
+      sql += ` GROUP BY p.department ORDER BY total_requested DESC`;
+      const departments = db.prepare(sql).all(...params);
       res.json(departments);
     } catch (err) {
       console.error("Failed to fetch department summary:", err);
@@ -2974,23 +3020,35 @@ async function startServer() {
         return res.status(404).json({ error: "ไม่พบหมวดค่าใช้จ่ายที่ต้องการลบ" });
       }
       
+      const isForce = req.query.force === 'true';
       const count = db.prepare(`
         SELECT COUNT(*) as count FROM projects 
         WHERE (expense_category = ? OR (is_loan = 1 AND loan_expense_category = ?))
       `).get(cat.name, cat.name) as any;
-      if (count && count.count > 0) {
+      const linkedCount = count?.count || 0;
+
+      if (linkedCount > 0 && !isForce) {
         return res.status(400).json({ 
-          error: `ไม่สามารถลบหมวดค่าใช้จ่าย "${cat.name}" ได้ เนื่องจากมี ${count.count} โครงการที่กำลังใช้งานหมวดนี้อยู่` 
+          error: `ไม่สามารถลบหมวดค่าใช้จ่าย "${cat.name}" ได้ เนื่องจากมี ${linkedCount} โครงการที่กำลังใช้งานหมวดนี้อยู่`,
+          hasLinkedProjects: true,
+          linkedCount
         });
       }
       
-      // Cleanly delete all associated allocations then delete the expense category
+      // Cleanly update linked projects if force=true, delete all associated allocations, then delete the expense category
       db.transaction(() => {
+        if (isForce && linkedCount > 0) {
+          db.prepare("UPDATE projects SET expense_category = 'ทั่วไป' WHERE expense_category = ?").run(cat.name);
+          db.prepare("UPDATE projects SET loan_expense_category = 'ทั่วไป' WHERE loan_expense_category = ?").run(cat.name);
+        }
         db.prepare("DELETE FROM expense_category_allocations WHERE category_id = ?").run(req.params.id);
         db.prepare("DELETE FROM expense_categories WHERE id = ?").run(req.params.id);
       })();
 
-      res.json({ success: true, message: `ลบหมวดค่าใช้จ่าย "${cat.name}" เรียบร้อยแล้ว` });
+      res.json({ 
+        success: true, 
+        message: `ลบหมวดค่าใช้จ่าย "${cat.name}" เรียบร้อยแล้ว${isForce && linkedCount > 0 ? ` (และปรับหมวดของ ${linkedCount} โครงการเป็น 'ทั่วไป')` : ''}` 
+      });
     } catch (err: any) {
       console.error("Error deleting expense category:", err);
       res.status(500).json({ error: err?.message || "Failed to delete expense category" });

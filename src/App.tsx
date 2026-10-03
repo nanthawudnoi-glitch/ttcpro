@@ -69,7 +69,7 @@ import {
   Cell 
 } from 'recharts';
 import { format, subDays, startOfMonth, startOfYear, endOfDay } from 'date-fns';
-import { Project, PROCESS_STEPS } from './types';
+import { Project, PROCESS_STEPS, BudgetSource, ExpenseCategory } from './types';
 import { safeParseJson, safeDate, formatThaiDate, formatThaiDateTime } from './utils';
 
 type UserRole = 
@@ -508,39 +508,6 @@ export default function App() {
     }
   };
 
-  const handleBackup = () => {
-    window.location.href = '/api/admin/backup';
-  };
-
-  const handleRestore = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-
-    if (!confirm('คุณแน่ใจหรือไม่ว่าต้องการคืนค่าฐานข้อมูล? ข้อมูลปัจจุบันจะถูกแทนที่ทั้งหมดและระบบจะรีสตาร์ท')) {
-      e.target.value = '';
-      return;
-    }
-
-    const formData = new FormData();
-    formData.append('database', file);
-
-    try {
-      const res = await fetch('/api/admin/restore', {
-        method: 'POST',
-        body: formData,
-      });
-      const data = (await safeParseJson(res)) || {};
-      alert(data.message || data.error);
-      if (res.ok) {
-        window.location.reload();
-      }
-    } catch (err) {
-      alert('เกิดข้อผิดพลาดในการคืนค่าฐานข้อมูล');
-    } finally {
-      e.target.value = '';
-    }
-  };
-
   const [showPendingModal, setShowPendingModal] = useState(false);
   const [showShopModal, setShowShopModal] = useState(false);
   const [showDepartmentModal, setShowDepartmentModal] = useState(false);
@@ -608,6 +575,70 @@ export default function App() {
   const [showAddCategoryModalInSettings, setShowAddCategoryModalInSettings] = useState(false);
   const [newCatNameInSettings, setNewCatNameInSettings] = useState('');
   const [newCatAmountInSettings, setNewCatAmountInSettings] = useState('');
+
+  // General In-App Confirm Dialog State (Replaces browser confirm)
+  const [confirmDialog, setConfirmDialog] = useState<{
+    isOpen: boolean;
+    title: string;
+    message: string;
+    confirmText?: string;
+    cancelText?: string;
+    variant?: 'danger' | 'primary' | 'warning';
+    onConfirm: () => void | Promise<void>;
+  } | null>(null);
+  const [isConfirmDialogBusy, setIsConfirmDialogBusy] = useState(false);
+
+  const openConfirmDialog = (
+    title: string,
+    message: string,
+    onConfirm: () => void | Promise<void>,
+    options?: { confirmText?: string; cancelText?: string; variant?: 'danger' | 'primary' | 'warning' }
+  ) => {
+    setConfirmDialog({
+      isOpen: true,
+      title,
+      message,
+      onConfirm,
+      confirmText: options?.confirmText || 'ยืนยัน',
+      cancelText: options?.cancelText || 'ยกเลิก',
+      variant: options?.variant || 'danger'
+    });
+  };
+
+  const handleBackup = () => {
+    window.location.href = '/api/admin/backup';
+  };
+
+  const handleRestore = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    openConfirmDialog(
+      'ยืนยันการคืนค่าฐานข้อมูล SQLite',
+      `คุณแน่ใจหรือไม่ว่าต้องการคืนค่าฐานข้อมูลจากไฟล์ "${file.name}"? ข้อมูลปัจจุบันในระบบจะถูกแทนที่ด้วยข้อมูลจากไฟล์สำรองทั้งหมด`,
+      async () => {
+        const formData = new FormData();
+        formData.append('database', file);
+        try {
+          const res = await fetch('/api/admin/restore', {
+            method: 'POST',
+            body: formData,
+          });
+          const data = (await safeParseJson(res)) || {};
+          if (res.ok) {
+            showToast(data.message || 'คืนค่าฐานข้อมูลเรียบร้อยแล้ว กำลังรีโหลดระบบ...', 'success');
+            setTimeout(() => window.location.reload(), 1500);
+          } else {
+            showToast(data.error || 'เกิดข้อผิดพลาดในการคืนค่าฐานข้อมูล', 'error');
+          }
+        } catch (err: any) {
+          showToast('เกิดข้อผิดพลาดในการเชื่อมต่อ: ' + err.message, 'error');
+        }
+      },
+      { confirmText: 'คืนค่าข้อมูล', variant: 'danger' }
+    );
+    e.target.value = '';
+  };
 
   const canDeleteProject = (proj: Project | null | undefined): boolean => {
     if (!proj || !currentUser || userRole === 'GUEST') return false;
@@ -1856,7 +1887,7 @@ export default function App() {
         body: JSON.stringify({
           name: newCatNameInSettings.trim(),
           allocated_budget: amountVal,
-          fiscal_year: selectedFiscalYear || '2568'
+          fiscal_year: currentFiscalYear || '2568'
         })
       });
       const data = await safeParseJson(res);
